@@ -63,6 +63,23 @@ require("neotest-tryke")({
 | `server.auto_start` | `boolean` | `true` | Auto-start server if not running |
 | `server.auto_stop` | `boolean` | `true` | Auto-stop server on exit |
 
+## Conflict with neotest-python
+
+If you have [neotest-python](https://github.com/nvim-neotest/neotest-python) installed, both adapters will claim Python test files and may interfere with each other. To avoid this, disable neotest-python by removing it from your adapters list:
+
+```lua
+require("neotest").setup({
+  adapters = {
+    -- remove or comment out neotest-python:
+    -- require("neotest-python"),
+
+    require("neotest-tryke")(),
+  },
+})
+```
+
+If you need neotest-python for non-tryke projects, you can conditionally load adapters per project using [lazy.nvim](https://github.com/folke/lazy.nvim) `cond` or by checking for a `tryke.toml` in your neotest config.
+
 ## Usage
 
 Run tests using neotest commands:

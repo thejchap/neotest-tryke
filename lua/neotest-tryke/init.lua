@@ -284,35 +284,9 @@ function adapter.results(spec, result, tree)
   return parsed
 end
 
-local function filter_neotest_python()
-  local ok, neotest_config = pcall(require, "neotest.config")
-  if not ok then
-    return
-  end
-  local adapters = neotest_config.adapters
-  if not adapters then
-    return
-  end
-  for _, a in ipairs(adapters) do
-    if a.name == "neotest-python" and not a._tryke_filtered then
-      a._tryke_filtered = true
-      local original = a.is_test_file
-      a.is_test_file = function(file_path)
-        if ts.is_test_file(file_path) then
-          return false
-        end
-        return original(file_path)
-      end
-    end
-  end
-end
-
 setmetatable(adapter, {
   __call = function(_, opts)
     cfg = config.get(opts)
-    if cfg.filter_neotest_python then
-      vim.schedule(filter_neotest_python)
-    end
     return adapter
   end,
 })
