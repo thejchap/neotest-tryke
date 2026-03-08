@@ -41,6 +41,9 @@ function adapter.is_test_file(file_path)
 end
 
 function adapter.discover_positions(file_path)
+  if not ts.is_test_file(file_path) then
+    return nil
+  end
   return lib.treesitter.parse_positions(file_path, ts.query)
 end
 
