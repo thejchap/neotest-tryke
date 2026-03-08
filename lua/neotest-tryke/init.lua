@@ -60,14 +60,21 @@ local function build_direct_spec(args)
 
   local command = { cfg.tryke_command, "test" }
 
+  local function to_relative(abs_path)
+    if root and abs_path:sub(1, #root) == root then
+      return abs_path:sub(#root + 2)
+    end
+    return abs_path
+  end
+
   if position.type == "test" then
-    table.insert(command, position.path)
+    table.insert(command, to_relative(position.path))
     table.insert(command, "-k")
     table.insert(command, position.name)
   elseif position.type == "file" then
-    table.insert(command, position.path)
+    table.insert(command, to_relative(position.path))
   elseif position.type == "dir" then
-    table.insert(command, position.path)
+    table.insert(command, to_relative(position.path))
   end
 
   table.insert(command, "--reporter")
