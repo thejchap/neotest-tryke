@@ -7,6 +7,10 @@ local server = require("neotest-tryke.server")
 
 local cfg = config.get()
 
+local function shell_escape(s)
+  return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
 local adapter = { name = "neotest-tryke" }
 
 function adapter.root(dir)
@@ -93,12 +97,12 @@ local function build_direct_spec(args)
   -- Build shell command string for stdout redirection to bypass PTY corruption
   local cmd_parts = {}
   for _, arg in ipairs(command) do
-    table.insert(cmd_parts, vim.fn.shellescape(arg))
+    table.insert(cmd_parts, shell_escape(arg))
   end
   local cmd_str = table.concat(cmd_parts, " ")
 
   return {
-    command = { "sh", "-c", cmd_str .. " > " .. vim.fn.shellescape(results_path) },
+    command = { "sh", "-c", cmd_str .. " > " .. shell_escape(results_path) },
     cwd = root,
     context = {
       root = root,
