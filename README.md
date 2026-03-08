@@ -1,6 +1,7 @@
 # neotest-tryke
 
 A [neotest](https://github.com/nvim-neotest/neotest) adapter for the [tryke](https://github.com/thejchap/tryke) test framework.
+<img width="1507" height="853" alt="Screenshot 2026-03-07 at 23 54 29" src="https://github.com/user-attachments/assets/e2ba1635-858c-436e-ac31-c79adf12919b" />
 
 ## requirements
 
