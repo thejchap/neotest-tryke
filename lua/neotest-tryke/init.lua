@@ -7,6 +7,8 @@ local server = require("neotest-tryke.server")
 
 local cfg = config.get()
 
+local log = require("neotest.logging")
+
 local function shell_escape(s)
   return "'" .. s:gsub("'", "'\\''") .. "'"
 end
@@ -100,6 +102,10 @@ local function build_direct_spec(args)
     table.insert(cmd_parts, shell_escape(arg))
   end
   local cmd_str = table.concat(cmd_parts, " ")
+
+  log.info("build_direct_spec: command =", cmd_str)
+  log.info("build_direct_spec: results_path =", results_path)
+  log.info("build_direct_spec: cwd =", root)
 
   return {
     command = { "sh", "-c", cmd_str .. " > " .. shell_escape(results_path) },
@@ -253,6 +259,7 @@ local function build_server_spec(args)
 end
 
 function adapter.build_spec(args)
+  log.info("build_spec called, mode =", cfg.mode)
   local use_server = false
 
   if cfg.mode == "server" then
@@ -286,22 +293,23 @@ function adapter.results(spec, result, tree)
   local output_path = spec.context.results_path or result.output
   local root = spec.context.root
 
-  local log = require("neotest.logging")
-
-  log.info("tryke: output_path =", output_path)
-  log.info("tryke: root =", root)
-  log.info("tryke: exit code =", result.code)
+  log.info("results() called")
+  log.info("  output_path =", output_path)
+  log.info("  root =", root)
+  log.info("  exit code =", result.code)
+  log.info("  result.output =", result.output)
 
   local content = lib.files.read(output_path)
-  log.info("tryke: raw output =", content)
+  log.info("  raw output length =", content and #content or "nil")
+  log.info("  raw output =", content and content:sub(1, 2000) or "nil")
 
   if not content or content == "" then
-    log.warn("tryke: empty output, returning no results")
+    log.info("  EMPTY OUTPUT, returning no results")
     return {}
   end
 
   local parsed = results_mod.parse_output(content, root)
-  log.info("tryke: parsed result IDs =", vim.inspect(vim.tbl_keys(parsed)))
+  log.info("  parsed IDs =", vim.tbl_keys(parsed))
 
   local expected_ids = {}
   for _, pos in tree:iter() do
@@ -315,7 +323,7 @@ function adapter.results(spec, result, tree)
       end
     end
   end
-  log.info("tryke: expected IDs from tree =", vim.inspect(expected_ids))
+  log.info("  expected IDs =", expected_ids)
 
   return parsed
 end
