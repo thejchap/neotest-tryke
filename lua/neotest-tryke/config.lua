@@ -12,6 +12,7 @@ local defaults = {
   },
   workers = nil,
   fail_fast = false,
+  filter_neotest_python = true,
 }
 
 function M.get(user_opts)

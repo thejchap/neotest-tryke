@@ -56,4 +56,14 @@ function M.is_test_file(file_path)
   return false
 end
 
+function M.is_tryke_project(root)
+  local f = io.open(root .. "/pyproject.toml", "r")
+  if not f then
+    return false
+  end
+  local content = f:read("*a")
+  f:close()
+  return content:find("tryke") ~= nil
+end
+
 return M

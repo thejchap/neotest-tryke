@@ -10,7 +10,14 @@ local cfg = config.get()
 local adapter = { name = "neotest-tryke" }
 
 function adapter.root(dir)
-  return lib.files.match_root_pattern("pyproject.toml")(dir)
+  local root = lib.files.match_root_pattern("pyproject.toml")(dir)
+  if not root then
+    return nil
+  end
+  if not ts.is_tryke_project(root) then
+    return nil
+  end
+  return root
 end
 
 local excluded_dirs = {
@@ -277,9 +284,35 @@ function adapter.results(spec, result, tree)
   return parsed
 end
 
+local function filter_neotest_python()
+  local ok, neotest_config = pcall(require, "neotest.config")
+  if not ok then
+    return
+  end
+  local adapters = neotest_config.adapters
+  if not adapters then
+    return
+  end
+  for _, a in ipairs(adapters) do
+    if a.name == "neotest-python" and not a._tryke_filtered then
+      a._tryke_filtered = true
+      local original = a.is_test_file
+      a.is_test_file = function(file_path)
+        if ts.is_test_file(file_path) then
+          return false
+        end
+        return original(file_path)
+      end
+    end
+  end
+end
+
 setmetatable(adapter, {
   __call = function(_, opts)
     cfg = config.get(opts)
+    if cfg.filter_neotest_python then
+      vim.schedule(filter_neotest_python)
+    end
     return adapter
   end,
 })
