@@ -286,21 +286,36 @@ function adapter.results(spec, result, tree)
   local output_path = spec.context.results_path or result.output
   local root = spec.context.root
 
+  local log = require("neotest.logging")
+
+  log.info("tryke: output_path =", output_path)
+  log.info("tryke: root =", root)
+  log.info("tryke: exit code =", result.code)
+
   local content = lib.files.read(output_path)
+  log.info("tryke: raw output =", content)
+
   if not content or content == "" then
+    log.warn("tryke: empty output, returning no results")
     return {}
   end
 
   local parsed = results_mod.parse_output(content, root)
+  log.info("tryke: parsed result IDs =", vim.inspect(vim.tbl_keys(parsed)))
 
+  local expected_ids = {}
   for _, pos in tree:iter() do
-    if pos.type == "test" and not parsed[pos.id] then
-      parsed[pos.id] = {
-        status = "skipped",
-        short = pos.name .. ": not run",
-      }
+    if pos.type == "test" then
+      table.insert(expected_ids, pos.id)
+      if not parsed[pos.id] then
+        parsed[pos.id] = {
+          status = "skipped",
+          short = pos.name .. ": not run",
+        }
+      end
     end
   end
+  log.info("tryke: expected IDs from tree =", vim.inspect(expected_ids))
 
   return parsed
 end
