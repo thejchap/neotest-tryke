@@ -83,18 +83,28 @@ local function build_direct_spec(args)
     end
   end
 
+  local results_path = nio.fn.tempname()
+  lib.files.write(results_path, "")
+  local stream_data, stop_stream = lib.files.stream_lines(results_path)
+
+  -- Build shell command string for stdout redirection to bypass PTY corruption
+  local cmd_parts = {}
+  for _, arg in ipairs(command) do
+    table.insert(cmd_parts, vim.fn.shellescape(arg))
+  end
+  local cmd_str = table.concat(cmd_parts, " ")
+
   return {
-    command = command,
+    command = { "sh", "-c", cmd_str .. " > " .. vim.fn.shellescape(results_path) },
     cwd = root,
     context = {
       root = root,
+      results_path = results_path,
+      stop_stream = stop_stream,
     },
-    stream = function(output_stream)
+    stream = function()
       return function()
-        local lines = output_stream()
-        if not lines or #lines == 0 then
-          return {}
-        end
+        local lines = stream_data()
         local streamed = {}
         for _, line in ipairs(lines) do
           local ok, decoded = pcall(vim.json.decode, line)
@@ -262,7 +272,11 @@ function adapter.build_spec(args)
 end
 
 function adapter.results(spec, result, tree)
-  local output_path = result.output
+  if spec.context.stop_stream then
+    spec.context.stop_stream()
+  end
+
+  local output_path = spec.context.results_path or result.output
   local root = spec.context.root
 
   local content = lib.files.read(output_path)
