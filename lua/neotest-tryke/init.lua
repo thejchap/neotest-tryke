@@ -173,7 +173,7 @@ local function build_server_spec(args)
     cwd = root,
     context = {
       root = root,
-      output_file = output_file,
+      results_path = output_file,
     },
     strategy = function()
       server.ensure_server(cfg)
@@ -185,7 +185,7 @@ local function build_server_spec(args)
       local streamed_results = {}
 
       server.on_notification("test_complete", function(msg)
-        local line = vim.json.encode(msg.params)
+        local line = vim.json.encode({ event = "test_complete", result = msg.params.result })
         table.insert(output_lines, line)
         if msg.params and msg.params.result then
           local tryke_result = msg.params.result
