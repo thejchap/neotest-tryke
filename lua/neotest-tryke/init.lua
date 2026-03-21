@@ -71,6 +71,18 @@ local function build_direct_spec(args)
     table.insert(command, to_relative(position.path))
     table.insert(command, "-k")
     table.insert(command, position.name)
+  elseif position.type == "namespace" then
+    table.insert(command, to_relative(position.path))
+    local test_names = {}
+    for _, pos in tree:iter() do
+      if pos.type == "test" then
+        table.insert(test_names, pos.name)
+      end
+    end
+    if #test_names > 0 then
+      table.insert(command, "-k")
+      table.insert(command, table.concat(test_names, " or "))
+    end
   elseif position.type == "file" then
     table.insert(command, to_relative(position.path))
   elseif position.type == "dir" then
@@ -132,11 +144,7 @@ local function build_direct_spec(args)
             local tryke_result = decoded.result
             local test = tryke_result.test
             if test.file_path then
-              local joinpath = vim.fs and vim.fs.joinpath or function(a, b)
-                return a .. "/" .. b
-              end
-              local file = joinpath(root, test.file_path)
-              local id = file .. "::" .. test.name
+              local id = results_mod.build_id(root, test)
               streamed[id] = results_mod.convert_result(tryke_result)
             end
           end
@@ -191,11 +199,7 @@ local function build_server_spec(args)
           local tryke_result = msg.params.result
           local test = tryke_result.test
           if test.file_path then
-            local joinpath = vim.fs and vim.fs.joinpath or function(a, b)
-              return a .. "/" .. b
-            end
-            local file = joinpath(root, test.file_path)
-            local id = file .. "::" .. test.name
+            local id = results_mod.build_id(root, test)
             streamed_results[id] = results_mod.convert_result(tryke_result)
           end
         end

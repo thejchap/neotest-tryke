@@ -95,6 +95,40 @@ describe("convert_result", function()
 	end)
 end)
 
+describe("build_id", function()
+	it("builds id without groups", function()
+		local id = results.build_id("/project", { file_path = "tests/math.py", name = "test_add" })
+		assert.equal("/project/tests/math.py::test_add", id)
+	end)
+
+	it("builds id with single group", function()
+		local id = results.build_id("/project", {
+			file_path = "tests/math.py",
+			name = "test_add",
+			groups = { "Math" },
+		})
+		assert.equal("/project/tests/math.py::Math::test_add", id)
+	end)
+
+	it("builds id with nested groups", function()
+		local id = results.build_id("/project", {
+			file_path = "tests/math.py",
+			name = "test_add",
+			groups = { "Math", "addition" },
+		})
+		assert.equal("/project/tests/math.py::Math::addition::test_add", id)
+	end)
+
+	it("builds id with empty groups array", function()
+		local id = results.build_id("/project", {
+			file_path = "tests/math.py",
+			name = "test_add",
+			groups = {},
+		})
+		assert.equal("/project/tests/math.py::test_add", id)
+	end)
+end)
+
 describe("parse_output", function()
 	it("parses single test_complete NDJSON line", function()
 		local line = vim.json.encode({
@@ -169,6 +203,19 @@ describe("parse_output", function()
 		})
 		local r = results.parse_output(line, "/project")
 		assert.same({}, r)
+	end)
+
+	it("includes groups in result id", function()
+		local line = vim.json.encode({
+			event = "test_complete",
+			result = {
+				test = { name = "test_add", file_path = "tests/math.py", groups = { "Math", "addition" } },
+				outcome = { status = "passed" },
+			},
+		})
+		local r = results.parse_output(line, "/project")
+		assert.is_not_nil(r["/project/tests/math.py::Math::addition::test_add"])
+		assert.equal("passed", r["/project/tests/math.py::Math::addition::test_add"].status)
 	end)
 
 	it("strips trailing slashes from root path", function()

@@ -10,6 +10,21 @@ local status_map = {
   todo = "skipped",
 }
 
+function M.build_id(root, test)
+  local joinpath = vim.fs and vim.fs.joinpath or function(a, b)
+    return a .. "/" .. b
+  end
+  local file = joinpath(root, test.file_path)
+  local parts = { file }
+  if test.groups then
+    for _, group in ipairs(test.groups) do
+      table.insert(parts, group)
+    end
+  end
+  table.insert(parts, test.name)
+  return table.concat(parts, "::")
+end
+
 function M.convert_result(tryke_result)
   local outcome = tryke_result.outcome
   local neotest_status = status_map[outcome.status] or "failed"
@@ -48,18 +63,13 @@ function M.parse_output(output_content, root_path)
   local results = {}
   local stripped_root = root_path:gsub("/+$", "")
 
-  local joinpath = vim.fs and vim.fs.joinpath or function(a, b)
-    return a .. "/" .. b
-  end
-
   for line in output_content:gmatch("[^\n]+") do
     local ok, decoded = pcall(vim.json.decode, line)
     if ok and decoded and decoded.event == "test_complete" and decoded.result then
       local tryke_result = decoded.result
       local test = tryke_result.test
       if test.file_path then
-        local file = joinpath(stripped_root, test.file_path)
-        local id = file .. "::" .. test.name
+        local id = M.build_id(stripped_root, test)
         results[id] = M.convert_result(tryke_result)
       end
     end

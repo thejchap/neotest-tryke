@@ -22,4 +22,8 @@ describe("is_test_file", function()
   it("returns false when import is beyond line 50", function()
     assert.is_false(ts.is_test_file(fixtures .. "late_import.py"))
   end)
+
+  it("returns true for file with describe blocks", function()
+    assert.is_true(ts.is_test_file(fixtures .. "describe_test.py"))
+  end)
 end)

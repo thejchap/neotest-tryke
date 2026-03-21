@@ -1,6 +1,18 @@
 local M = {}
 
 M.query = [[
+  ;; with describe("name"):
+  (with_statement
+    (with_clause
+      (with_item
+        value: (call
+          function: (identifier) @_ns_fn
+          arguments: (argument_list
+            (string
+              (string_content) @namespace.name)))))
+  ) @namespace.definition
+  (#eq? @_ns_fn "describe")
+
   ;; @test
   (decorated_definition
     (decorator (identifier) @_dec_name)
