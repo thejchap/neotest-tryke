@@ -121,4 +121,102 @@ describe("position_id", function()
     )
     assert.equal("/project/tests/test.py::my group::test_fn", id)
   end)
+
+  it("skips doctest parents in id", function()
+    local id = ts.position_id(
+      { path = "/p/t.py", name = "doctest: Counter.increment", _func_name = "Counter.increment", _is_doctest = true },
+      { { name = "doctest: Counter", _func_name = "Counter", _is_doctest = true } }
+    )
+    assert.equal("/p/t.py::Counter.increment", id)
+  end)
+
+  it("keeps namespace parents but skips doctest parents in id", function()
+    local id = ts.position_id(
+      { path = "/p/t.py", name = "doctest: add", _func_name = "add", _is_doctest = true },
+      { { name = "expect" } }
+    )
+    assert.equal("/p/t.py::expect::add", id)
+  end)
+end)
+
+describe("doctest discovery", function()
+  it("discovers function with doctest", function()
+    local positions = parse_positions(fixtures .. "doctest_test.py")
+    local found = false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "add" then
+        assert.equal("doctest: add", pos.name)
+        assert.is_true(pos._is_doctest)
+        found = true
+      end
+    end
+    assert.is_true(found, "expected to find doctest for add()")
+  end)
+
+  it("does not discover function without doctest", function()
+    local positions = parse_positions(fixtures .. "doctest_test.py")
+    for _, pos in ipairs(positions) do
+      assert.is_not_equal("no_doctest", pos._func_name)
+      assert.is_not_equal("no_doctest", pos.name)
+    end
+  end)
+
+  it("discovers class with doctest", function()
+    local positions = parse_positions(fixtures .. "doctest_test.py")
+    local found = false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "Counter" then
+        assert.equal("doctest: Counter", pos.name)
+        assert.is_true(pos._is_doctest)
+        found = true
+      end
+    end
+    assert.is_true(found, "expected to find doctest for Counter class")
+  end)
+
+  it("discovers method with dotted name", function()
+    local positions = parse_positions(fixtures .. "doctest_test.py")
+    local found = false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "Counter.increment" then
+        assert.equal("doctest: Counter.increment", pos.name)
+        assert.is_true(pos._is_doctest)
+        found = true
+      end
+    end
+    assert.is_true(found, "expected to find doctest for Counter.increment")
+  end)
+
+  it("does not discover method without doctest", function()
+    local positions = parse_positions(fixtures .. "doctest_test.py")
+    for _, pos in ipairs(positions) do
+      if pos._func_name then
+        assert.is_not_equal("Counter.reset", pos._func_name)
+      end
+    end
+  end)
+
+  it("discovers module-level doctest", function()
+    local positions = parse_positions(fixtures .. "module_doctest.py")
+    local found = false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "__module__" then
+        assert.equal("doctest: (module)", pos.name)
+        assert.is_true(pos._is_doctest)
+        found = true
+      end
+    end
+    assert.is_true(found, "expected to find module-level doctest")
+  end)
+
+  it("still discovers regular @test alongside doctests", function()
+    local positions = parse_positions(fixtures .. "doctest_test.py")
+    local found = false
+    for _, pos in ipairs(positions) do
+      if pos.name == "test_something" and not pos._is_doctest then
+        found = true
+      end
+    end
+    assert.is_true(found, "expected to find regular @test")
+  end)
 end)

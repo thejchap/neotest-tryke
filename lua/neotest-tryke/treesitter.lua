@@ -44,6 +44,31 @@ M.query = [[
     definition: (function_definition
       name: (identifier) @test.name)) @test.definition
   (#eq? @_dec_obj "test")
+
+  ;; doctest in function/method docstring
+  (function_definition
+    name: (identifier) @test.name
+    body: (block .
+      (expression_statement
+        (string
+          (string_content) @_docstring)))) @test.definition
+  (#match? @_docstring ">>>")
+
+  ;; doctest in class docstring
+  (class_definition
+    name: (identifier) @test.name
+    body: (block .
+      (expression_statement
+        (string
+          (string_content) @_docstring)))) @test.definition
+  (#match? @_docstring ">>>")
+
+  ;; doctest in module-level docstring
+  (module .
+    (expression_statement
+      (string
+        (string_content) @_module_docstring)) @test.definition)
+  (#match? @_module_docstring ">>>")
 ]]
 
 local function get_string_content(string_node, source)
@@ -100,7 +125,40 @@ local function extract_display_name(definition_node, source)
   return nil
 end
 
+local function find_parent_class_name(node, source)
+  local parent = node:parent()
+  if parent and parent:type() == "block" then
+    local grandparent = parent:parent()
+    if grandparent and grandparent:type() == "class_definition" then
+      for i = 0, grandparent:named_child_count() - 1 do
+        local c = grandparent:named_child(i)
+        if c:type() == "identifier" then
+          return vim.treesitter.get_node_text(c, source)
+        end
+      end
+    end
+  end
+  return nil
+end
+
 function M.build_position(file_path, source, captured_nodes)
+  -- module-level doctest (no test.name capture)
+  if captured_nodes["_module_docstring"] then
+    local docstring_text = vim.treesitter.get_node_text(captured_nodes["_module_docstring"], source)
+    if not docstring_text or not docstring_text:find(">>>") then
+      return nil
+    end
+    local definition = captured_nodes["test.definition"]
+    return {
+      type = "test",
+      path = file_path,
+      name = "doctest: (module)",
+      _func_name = "__module__",
+      _is_doctest = true,
+      range = { definition:range() },
+    }
+  end
+
   local match_type = nil
   if captured_nodes["test.name"] then
     match_type = "test"
@@ -118,7 +176,22 @@ function M.build_position(file_path, source, captured_nodes)
     name = name,
     range = { definition:range() },
   }
-  if match_type == "test" then
+  if match_type == "test" and captured_nodes["_docstring"] then
+    -- verify the docstring actually contains >>>
+    local docstring_text = vim.treesitter.get_node_text(captured_nodes["_docstring"], source)
+    if not docstring_text or not docstring_text:find(">>>") then
+      return nil
+    end
+    -- function/class/method doctest
+    local doctest_name = name
+    local class_name = find_parent_class_name(definition, source)
+    if class_name then
+      doctest_name = class_name .. "." .. name
+    end
+    position.name = "doctest: " .. doctest_name
+    position._func_name = doctest_name
+    position._is_doctest = true
+  elseif match_type == "test" then
     local display_name = extract_display_name(definition, source)
     if display_name then
       position.name = display_name
@@ -129,10 +202,17 @@ function M.build_position(file_path, source, captured_nodes)
 end
 
 function M.position_id(position, parents)
+  local parent_names = {}
+  for _, pos in ipairs(parents) do
+    -- skip doctest parents (e.g. class doctests) since tryke uses flat dotted names
+    if not pos._is_doctest then
+      table.insert(parent_names, pos._func_name or pos.name)
+    end
+  end
   return table.concat(
     vim.tbl_flatten({
       position.path,
-      vim.tbl_map(function(pos) return pos._func_name or pos.name end, parents),
+      parent_names,
       position._func_name or position.name,
     }),
     "::"
