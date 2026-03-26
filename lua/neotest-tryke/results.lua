@@ -29,7 +29,8 @@ function M.convert_result(tryke_result)
   local outcome = tryke_result.outcome
   local neotest_status = status_map[outcome.status] or "failed"
 
-  local short = tryke_result.test.name .. ": " .. neotest_status
+  local display = tryke_result.test.display_name or tryke_result.test.name
+  local short = display .. ": " .. neotest_status
 
   local result = {
     status = neotest_status,
