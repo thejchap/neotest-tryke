@@ -45,6 +45,10 @@ describe("is_test_file", function()
   it("returns true for file with describe blocks", function()
     assert.is_true(ts.is_test_file(fixtures .. "describe_test.py"))
   end)
+
+  it("returns true for file with doctests but no tryke import", function()
+    assert.is_true(ts.is_test_file(fixtures .. "lib_with_doctests.py"))
+  end)
 end)
 
 describe("build_position", function()

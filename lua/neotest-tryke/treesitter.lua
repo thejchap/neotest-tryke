@@ -227,18 +227,21 @@ function M.is_test_file(file_path)
   if not f then
     return false
   end
-  for i = 1, 50 do
-    local line = f:read("*l")
-    if not line then
+  local has_tryke_import = false
+  local has_doctest = false
+  local i = 0
+  for line in f:lines() do
+    i = i + 1
+    if i <= 50 and (line:find("from tryke import") or line:find("import tryke")) then
+      has_tryke_import = true
       break
     end
-    if line:find("from tryke import") or line:find("import tryke") then
-      f:close()
-      return true
+    if not has_doctest and line:find(">>>") then
+      has_doctest = true
     end
   end
   f:close()
-  return false
+  return has_tryke_import or has_doctest
 end
 
 function M.is_tryke_project(root)
