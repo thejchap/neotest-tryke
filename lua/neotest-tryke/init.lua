@@ -51,8 +51,8 @@ function adapter.discover_positions(file_path)
     return nil
   end
   return lib.treesitter.parse_positions(file_path, ts.query, {
-    build_position = 'require("neotest-tryke.treesitter").build_position',
-    position_id = 'require("neotest-tryke.treesitter").position_id',
+    build_position = ts.build_position,
+    position_id = ts.position_id,
     nested_tests = true,
   })
 end
