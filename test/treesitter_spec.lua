@@ -244,6 +244,18 @@ describe("doctest discovery", function()
     assert.is_true(found_check_path, "expected to find _check_path doctest")
   end)
 
+  it("discovers @test decorated function in simple test file", function()
+    local positions = parse_positions(fixtures .. "simple_test.py")
+    local found = false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "test_basic" then
+        assert.equal("basic", pos.name)
+        found = true
+      end
+    end
+    assert.is_true(found, "expected to find test_basic with display name 'basic'")
+  end)
+
   it("does not discover non-doctest functions in jc-news-style file", function()
     local positions = parse_positions(fixtures .. "jc_news_init.py")
     local bad_names = { "coro", "main", "async_run", "async_fetch_hn", "async_fetch_twitter",
