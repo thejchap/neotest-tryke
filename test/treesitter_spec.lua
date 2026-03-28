@@ -223,4 +223,36 @@ describe("doctest discovery", function()
     end
     assert.is_true(found, "expected to find regular @test")
   end)
+
+  it("discovers doctests in jc-news-style file (no tryke import)", function()
+    local positions = parse_positions(fixtures .. "jc_news_init.py")
+    local found_module = false
+    local found_check_path = false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "__module__" then
+        assert.equal("doctest: (module)", pos.name)
+        assert.is_true(pos._is_doctest)
+        found_module = true
+      end
+      if pos._func_name == "_check_path" then
+        assert.equal("doctest: _check_path", pos.name)
+        assert.is_true(pos._is_doctest)
+        found_check_path = true
+      end
+    end
+    assert.is_true(found_module, "expected to find module-level doctest")
+    assert.is_true(found_check_path, "expected to find _check_path doctest")
+  end)
+
+  it("does not discover non-doctest functions in jc-news-style file", function()
+    local positions = parse_positions(fixtures .. "jc_news_init.py")
+    local bad_names = { "coro", "main", "async_run", "async_fetch_hn", "async_fetch_twitter",
+      "async_summarize_hn", "async_summarize_twitter", "wrapper" }
+    for _, pos in ipairs(positions) do
+      for _, bad in ipairs(bad_names) do
+        assert.is_not_equal(bad, pos._func_name, "should not discover " .. bad)
+        assert.is_not_equal(bad, pos.name, "should not discover " .. bad)
+      end
+    end
+  end)
 end)

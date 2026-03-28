@@ -159,6 +159,21 @@ function M.build_position(file_path, source, captured_nodes)
     }
   end
 
+  -- verify decorator patterns actually matched @test (treesitter predicates may not
+  -- be enforced in all environments, so check the captured decorator name in lua)
+  if captured_nodes["_dec_name"] then
+    local dec_text = vim.treesitter.get_node_text(captured_nodes["_dec_name"], source)
+    if dec_text ~= "test" then
+      return nil
+    end
+  end
+  if captured_nodes["_dec_obj"] then
+    local dec_text = vim.treesitter.get_node_text(captured_nodes["_dec_obj"], source)
+    if dec_text ~= "test" then
+      return nil
+    end
+  end
+
   local match_type = nil
   if captured_nodes["test.name"] then
     match_type = "test"
