@@ -51,6 +51,31 @@ describe("convert_result", function()
 		assert.equal("RuntimeError: boom", r.errors[1].message)
 	end)
 
+	it("uses display_name when present", function()
+		local r = results.convert_result({
+			test = { name = "test_add", display_name = "basic addition" },
+			outcome = { status = "passed" },
+		})
+		assert.equal("passed", r.status)
+		assert.equal("basic addition: passed", r.short)
+	end)
+
+	it("falls back to name when display_name is nil", function()
+		local r = results.convert_result({
+			test = { name = "test_add" },
+			outcome = { status = "passed" },
+		})
+		assert.equal("test_add: passed", r.short)
+	end)
+
+	it("falls back to name when display_name is vim.NIL (JSON null)", function()
+		local r = results.convert_result({
+			test = { name = "test_add", display_name = vim.NIL },
+			outcome = { status = "passed" },
+		})
+		assert.equal("test_add: passed", r.short)
+	end)
+
 	it("maps skipped", function()
 		local r = results.convert_result({
 			test = { name = "test_skip" },

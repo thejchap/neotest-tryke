@@ -51,7 +51,9 @@ function adapter.discover_positions(file_path)
     return nil
   end
   return lib.treesitter.parse_positions(file_path, ts.query, {
-    build_position = 'require("neotest-tryke.treesitter")._build_position',
+    build_position = 'require("neotest-tryke.treesitter").build_position',
+    position_id = ts.position_id,
+    nested_tests = true,
   })
 end
 
@@ -72,13 +74,13 @@ local function build_direct_spec(args)
   if position.type == "test" then
     table.insert(command, to_relative(position.path))
     table.insert(command, "-k")
-    table.insert(command, position.name)
+    table.insert(command, position._func_name or position.name)
   elseif position.type == "namespace" then
     table.insert(command, to_relative(position.path))
     local test_names = {}
     for _, pos in tree:iter() do
       if pos.type == "test" then
-        table.insert(test_names, pos.name)
+        table.insert(test_names, pos._func_name or pos.name)
       end
     end
     if #test_names > 0 then
@@ -165,12 +167,12 @@ local function build_server_spec(args)
   local test_ids = {}
   if position.type == "test" then
     local relative = position.path:sub(#root + 2)
-    table.insert(test_ids, relative .. "::" .. position.name)
+    table.insert(test_ids, relative .. "::" .. (position._func_name or position.name))
   else
     for _, pos in tree:iter() do
       if pos.type == "test" then
         local relative = pos.path:sub(#root + 2)
-        table.insert(test_ids, relative .. "::" .. pos.name)
+        table.insert(test_ids, relative .. "::" .. (pos._func_name or pos.name))
       end
     end
   end
