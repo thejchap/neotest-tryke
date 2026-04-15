@@ -21,7 +21,11 @@ function M.build_id(root, test)
       table.insert(parts, group)
     end
   end
-  table.insert(parts, test.name)
+  local leaf = test.name
+  if test.case_label and test.case_label ~= vim.NIL and test.case_label ~= "" then
+    leaf = leaf .. "[" .. test.case_label .. "]"
+  end
+  table.insert(parts, leaf)
   return table.concat(parts, "::")
 end
 
