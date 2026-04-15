@@ -127,6 +127,34 @@ describe("build_id", function()
 		})
 		assert.equal("/project/tests/math.py::test_add", id)
 	end)
+
+	it("appends case_label suffix", function()
+		local id = results.build_id("/project", {
+			file_path = "tests/math.py",
+			name = "square",
+			case_label = "zero",
+		})
+		assert.equal("/project/tests/math.py::square[zero]", id)
+	end)
+
+	it("appends case_label with groups", function()
+		local id = results.build_id("/project", {
+			file_path = "tests/math.py",
+			name = "square",
+			groups = { "Math" },
+			case_label = "two",
+		})
+		assert.equal("/project/tests/math.py::Math::square[two]", id)
+	end)
+
+	it("ignores vim.NIL case_label", function()
+		local id = results.build_id("/project", {
+			file_path = "tests/math.py",
+			name = "test_add",
+			case_label = vim.NIL,
+		})
+		assert.equal("/project/tests/math.py::test_add", id)
+	end)
 end)
 
 describe("parse_output", function()
@@ -216,6 +244,23 @@ describe("parse_output", function()
 		local r = results.parse_output(line, "/project")
 		assert.is_not_nil(r["/project/tests/math.py::Math::addition::test_add"])
 		assert.equal("passed", r["/project/tests/math.py::Math::addition::test_add"].status)
+	end)
+
+	it("includes case_label in result id", function()
+		local line = vim.json.encode({
+			event = "test_complete",
+			result = {
+				test = {
+					name = "square",
+					file_path = "tests/math.py",
+					case_label = "zero",
+				},
+				outcome = { status = "passed" },
+			},
+		})
+		local r = results.parse_output(line, "/project")
+		assert.is_not_nil(r["/project/tests/math.py::square[zero]"])
+		assert.equal("passed", r["/project/tests/math.py::square[zero]"].status)
 	end)
 
 	it("strips trailing slashes from root path", function()

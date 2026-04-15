@@ -3,7 +3,8 @@
   "runtime.version": "LuaJIT",
   "runtime.path": ["lua/?.lua", "lua/?/init.lua"],
   "workspace.library": [
-    "${3rd}/luv/library"
+    "${3rd}/luv/library",
+    "/usr/share/nvim/runtime/lua"
   ],
   "workspace.checkThirdParty": false,
   "diagnostics.globals": ["describe", "it", "before_each", "after_each", "setup", "teardown", "assert", "vim"]
