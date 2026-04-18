@@ -393,3 +393,156 @@ def skipped(x: int) -> None:
     assert.is_false(vim.tbl_contains(names, "skipped"))
   end)
 end)
+
+describe("import alias support", function()
+  local function collect_positions(src)
+    local parser = vim.treesitter.get_string_parser(src, "python", {
+      injections = { python = "" },
+    })
+    local root = parser:parse()[1]:root()
+    local parsed_query = vim.treesitter.query.parse("python", ts.query)
+    local positions = {}
+    for _, match in parsed_query:iter_matches(root, src, nil, nil, { all = false }) do
+      local captured_nodes = {}
+      for i, capture in ipairs(parsed_query.captures) do
+        captured_nodes[capture] = match[i]
+      end
+      local res = ts.build_position("alias.py", src, captured_nodes)
+      if res then
+        if res[1] then
+          for _, p in ipairs(res) do
+            table.insert(positions, p)
+          end
+        else
+          table.insert(positions, res)
+        end
+      end
+    end
+    return positions
+  end
+
+  local function parse_fixture(name)
+    local path = fixtures .. name
+    local content = io.open(path, "r"):read("*a")
+    return collect_positions(content)
+  end
+
+  local function names_of(positions)
+    local names = {}
+    for _, pos in ipairs(positions) do
+      table.insert(names, pos.name)
+    end
+    return names
+  end
+
+  local function namespaces_of(positions)
+    local names = {}
+    for _, pos in ipairs(positions) do
+      if pos.type == "namespace" then
+        table.insert(names, pos.name)
+      end
+    end
+    return names
+  end
+
+  it("recognises `@t.test` through a module alias", function()
+    local names = names_of(parse_fixture("alias_module_test.py"))
+    assert.is_true(vim.tbl_contains(names, "test_basic"))
+  end)
+
+  it("recognises `@t.test(name=...)` display names through a module alias", function()
+    local positions = parse_fixture("alias_module_test.py")
+    local found = false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "test_named" then
+        assert.equal("named through module alias", pos.name)
+        found = true
+      end
+    end
+    assert.is_true(found, "expected display name from @t.test(name=...)")
+  end)
+
+  it("recognises `@t.test.skip(...)` through a module alias", function()
+    local names = names_of(parse_fixture("alias_module_test.py"))
+    assert.is_true(vim.tbl_contains(names, "test_skipped"))
+  end)
+
+  it("recognises `with t.describe(...)` through a module alias", function()
+    local positions = parse_fixture("alias_module_test.py")
+    assert.is_true(vim.tbl_contains(namespaces_of(positions), "Channel"))
+  end)
+
+  it("expands `@t.test.cases(...)` through a module alias", function()
+    local names = names_of(parse_fixture("alias_module_test.py"))
+    assert.is_true(vim.tbl_contains(names, "square[zero]"))
+    assert.is_true(vim.tbl_contains(names, "square[one]"))
+    assert.is_false(vim.tbl_contains(names, "square"))
+  end)
+
+  it("expands `@t.test.cases(t.test.case(...))` typed form", function()
+    local names = names_of(parse_fixture("alias_module_test.py"))
+    assert.is_true(vim.tbl_contains(names, "square_typed[my test]"))
+    assert.is_true(vim.tbl_contains(names, "square_typed[2 + 3]"))
+  end)
+
+  it("recognises `@tst` through a symbol alias", function()
+    local names = names_of(parse_fixture("alias_symbol_test.py"))
+    assert.is_true(vim.tbl_contains(names, "fn"))
+  end)
+
+  it("recognises `@tst(name=...)` and positional forms through a symbol alias", function()
+    local positions = parse_fixture("alias_symbol_test.py")
+    local named, positional = false, false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "fn_named" then
+        assert.equal("kwarg via alias", pos.name)
+        named = true
+      end
+      if pos._func_name == "fn_positional" then
+        assert.equal("positional via alias", pos.name)
+        positional = true
+      end
+    end
+    assert.is_true(named, "expected kwarg display name through alias")
+    assert.is_true(positional, "expected positional display name through alias")
+  end)
+
+  it("recognises `@tst.skip` through a symbol alias", function()
+    local names = names_of(parse_fixture("alias_symbol_test.py"))
+    assert.is_true(vim.tbl_contains(names, "fn_skipped"))
+  end)
+
+  it("recognises `with d(...)` through a symbol alias", function()
+    local positions = parse_fixture("alias_symbol_test.py")
+    assert.is_true(vim.tbl_contains(namespaces_of(positions), "Group"))
+  end)
+
+  it("recognises `with d(name=...)` kwarg describe form", function()
+    local positions = parse_fixture("alias_symbol_test.py")
+    assert.is_true(vim.tbl_contains(namespaces_of(positions), "KwargGroup"))
+  end)
+
+  it("expands `@tst.cases(...)` through a symbol alias", function()
+    local names = names_of(parse_fixture("alias_symbol_test.py"))
+    assert.is_true(vim.tbl_contains(names, "parametrized[a]"))
+    assert.is_true(vim.tbl_contains(names, "parametrized[b]"))
+    assert.is_false(vim.tbl_contains(names, "parametrized"))
+  end)
+
+  it("expands typed `tst.case(...)` through a symbol alias", function()
+    local names = names_of(parse_fixture("alias_symbol_test.py"))
+    assert.is_true(vim.tbl_contains(names, "typed_cases[first]"))
+    assert.is_true(vim.tbl_contains(names, "typed_cases[second]"))
+  end)
+
+  it("recognises aliases imported inside an `if __TRYKE_TESTING__:` guard", function()
+    local positions = parse_fixture("alias_guard_test.py")
+    assert.is_true(vim.tbl_contains(names_of(positions), "test_basic"))
+    assert.is_true(vim.tbl_contains(namespaces_of(positions), "Channel"))
+  end)
+
+  it("does not discover tests when a local def shadows an aliased name", function()
+    local names = names_of(parse_fixture("alias_shadow_test.py"))
+    assert.is_false(vim.tbl_contains(names, "shadowed_not_a_tryke_test"))
+  end)
+end)

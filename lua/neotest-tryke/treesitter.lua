@@ -1,64 +1,26 @@
+local alias = require("neotest-tryke.alias")
+
 local M = {}
 
+--- TreeSitter query matching every shape the build_position callback needs
+--- to reason about. The matchers are intentionally broad: decorators of any
+--- kind, context-managed calls of any kind, plus doctest shapes. Lua-side
+--- logic in `build_position` resolves each match against the per-file
+--- alias table built by `alias.lua`, so aliased imports
+--- (`import tryke as t`, `from tryke import test as tst`, etc.) are
+--- recognised without having to duplicate each pattern.
 M.query = [[
-  ;; with describe("name"):
+  ;; with <anything>(...):
   (with_statement
     (with_clause
       (with_item
-        value: (call
-          function: (identifier) @_ns_fn
-          arguments: (argument_list
-            (string
-              (string_content) @namespace.name)))))
-  ) @namespace.definition
-  (#eq? @_ns_fn "describe")
+        value: (call) @_ns_call))) @namespace.definition
 
-  ;; @test
+  ;; Any decorated function definition. Lua walks the decorator stack to
+  ;; decide whether any decorator resolves to a tryke test marker.
   (decorated_definition
-    (decorator (identifier) @_dec_name)
     definition: (function_definition
       name: (identifier) @test.name)) @test.definition
-  (#eq? @_dec_name "test")
-
-  ;; @test() / @test(name="...")
-  (decorated_definition
-    (decorator (call
-      function: (identifier) @_dec_name))
-    definition: (function_definition
-      name: (identifier) @test.name)) @test.definition
-  (#eq? @_dec_name "test")
-
-  ;; @test.skip / @test.todo / @test.xfail
-  (decorated_definition
-    (decorator (attribute
-      object: (identifier) @_dec_obj))
-    definition: (function_definition
-      name: (identifier) @test.name)) @test.definition
-  (#eq? @_dec_obj "test")
-
-  ;; @test.skip(...) / @test.todo(...) / @test.xfail(...) / @test.skip_if(...)
-  ;; (not @test.cases — handled by the dedicated cases pattern below)
-  ((decorated_definition
-    (decorator (call
-      function: (attribute
-        object: (identifier) @_dec_obj
-        attribute: (identifier) @_dec_attr)))
-    definition: (function_definition
-      name: (identifier) @test.name)) @test.definition
-   (#eq? @_dec_obj "test")
-   (#not-eq? @_dec_attr "cases"))
-
-  ;; @test.cases(...) — build_position expands into one position per case
-  ((decorated_definition
-    (decorator (call
-      function: (attribute
-        object: (identifier) @_cases_obj
-        attribute: (identifier) @_cases_attr)
-      arguments: (argument_list) @_cases_args))
-    definition: (function_definition
-      name: (identifier) @test.name)) @test.definition
-   (#eq? @_cases_obj "test")
-   (#eq? @_cases_attr "cases"))
 
   ;; doctest in function/method docstring
   (function_definition
@@ -86,6 +48,13 @@ M.query = [[
   (#match? @_module_docstring ">>>")
 ]]
 
+local MODIFIER_ATTRS = {
+  skip = true,
+  todo = true,
+  xfail = true,
+  skip_if = true,
+}
+
 local function get_string_content(string_node, source)
   for i = 0, string_node:named_child_count() - 1 do
     local child = string_node:named_child(i)
@@ -96,50 +65,178 @@ local function get_string_content(string_node, source)
   return nil
 end
 
-local function extract_display_name(definition_node, source)
-  for i = 0, definition_node:named_child_count() - 1 do
-    local child = definition_node:named_child(i)
-    if child:type() == "decorator" then
-      for j = 0, child:named_child_count() - 1 do
-        local dec_child = child:named_child(j)
-        if dec_child:type() == "call" then
-          local args_node = nil
-          for k = 0, dec_child:named_child_count() - 1 do
-            local c = dec_child:named_child(k)
-            if c:type() == "argument_list" then
-              args_node = c
-              break
-            end
-          end
-          if not args_node then
-            return nil
-          end
-          -- Keyword form: @test(name="...").
-          for l = 0, args_node:named_child_count() - 1 do
-            local arg = args_node:named_child(l)
-            if arg:type() == "keyword_argument" then
-              local key = arg:named_child(0)
-              if key and vim.treesitter.get_node_text(key, source) == "name" then
-                local val = arg:named_child(1)
-                if val and val:type() == "string" then
-                  return get_string_content(val, source)
-                end
-              end
-            end
-          end
-          -- Positional form: @test("...").
-          local first = args_node:named_child(0)
-          if first and first:type() == "string" then
-            return get_string_content(first, source)
-          end
-          return nil
+--- Extract the first positional or `name=` string argument from *call_node*.
+--- Used to resolve `@test("…")` / `@test(name="…")` display names and
+--- `describe("…")` / `describe(name="…")` namespace labels.
+---@param call_node table
+---@param source string
+---@return string|nil
+local function extract_string_arg(call_node, source)
+  local args_node
+  for i = 0, call_node:named_child_count() - 1 do
+    local c = call_node:named_child(i)
+    if c:type() == "argument_list" then
+      args_node = c
+      break
+    end
+  end
+  if not args_node then
+    return nil
+  end
+  for i = 0, args_node:named_child_count() - 1 do
+    local arg = args_node:named_child(i)
+    if arg:type() == "keyword_argument" then
+      local key = arg:named_child(0)
+      if key and vim.treesitter.get_node_text(key, source) == "name" then
+        local val = arg:named_child(1)
+        if val and val:type() == "string" then
+          return get_string_content(val, source)
         end
       end
     end
   end
+  local first = args_node:named_child(0)
+  if first and first:type() == "string" then
+    return get_string_content(first, source)
+  end
   return nil
 end
 
+--- Describes a decorator's relationship to tryke. `kind` names the role —
+--- `test` for `@test` / `@t.test` / `@tst`, `modifier` for `@test.skip` and
+--- friends, `cases` for `@test.cases(...)`. `call` holds the outer call
+--- node when the decorator is invoked with parentheses so the caller can
+--- pull display names or case tables out of the same node.
+---@alias DecoratorInfo { kind: "test"|"modifier"|"cases", attr: string|nil, call: table|nil }
+
+--- Classify a decorator node (the `(decorator ...)` AST node) against the
+--- per-file alias table. Returns `nil` when the decorator is not a tryke
+--- marker — for example a `@staticmethod` or unrelated `@mylib.decorator`.
+---@param decorator_node table
+---@param source string
+---@param aliases table
+---@return DecoratorInfo|nil
+local function classify_decorator(decorator_node, source, aliases)
+  local expr
+  for i = 0, decorator_node:named_child_count() - 1 do
+    expr = decorator_node:named_child(i)
+    break
+  end
+  if not expr then
+    return nil
+  end
+
+  local call_node = nil
+  if expr:type() == "call" then
+    call_node = expr
+    local inner
+    for i = 0, expr:named_child_count() - 1 do
+      local c = expr:named_child(i)
+      if c:type() ~= "argument_list" then
+        inner = c
+        break
+      end
+    end
+    if not inner then
+      return nil
+    end
+    expr = inner
+  end
+
+  if expr:type() == "identifier" then
+    local name = vim.treesitter.get_node_text(expr, source)
+    if alias.is_tryke_symbol(aliases, source, name, "test") then
+      return { kind = "test", call = call_node }
+    end
+    return nil
+  end
+
+  if expr:type() ~= "attribute" then
+    return nil
+  end
+
+  local obj = expr:named_child(0)
+  local attr = expr:named_child(1)
+  if not obj or not attr then
+    return nil
+  end
+  local attr_name = vim.treesitter.get_node_text(attr, source)
+
+  if obj:type() == "identifier" then
+    local obj_name = vim.treesitter.get_node_text(obj, source)
+
+    if attr_name == "test" and alias.is_module(aliases, obj_name) then
+      return { kind = "test", call = call_node }
+    end
+
+    if attr_name == "cases" and alias.is_tryke_symbol(aliases, source, obj_name, "test") then
+      if call_node then
+        return { kind = "cases", call = call_node }
+      end
+      return nil
+    end
+
+    if MODIFIER_ATTRS[attr_name] and alias.is_tryke_symbol(aliases, source, obj_name, "test") then
+      return { kind = "modifier", attr = attr_name, call = call_node }
+    end
+
+    return nil
+  end
+
+  if obj:type() == "attribute" then
+    local inner_obj = obj:named_child(0)
+    local inner_attr = obj:named_child(1)
+    if not inner_obj or not inner_attr or inner_obj:type() ~= "identifier" then
+      return nil
+    end
+    local mod_name = vim.treesitter.get_node_text(inner_obj, source)
+    local mid_attr = vim.treesitter.get_node_text(inner_attr, source)
+    if mid_attr ~= "test" or not alias.is_module(aliases, mod_name) then
+      return nil
+    end
+    if attr_name == "cases" then
+      if call_node then
+        return { kind = "cases", call = call_node }
+      end
+      return nil
+    end
+    if MODIFIER_ATTRS[attr_name] then
+      return { kind = "modifier", attr = attr_name, call = call_node }
+    end
+    return nil
+  end
+
+  return nil
+end
+
+--- Collect every tryke decorator on a `decorated_definition` node, in the
+--- order they appear in source. The returned list is used to find the
+--- first meaningful decorator (for display names) and to detect the
+--- common `@test.skip` + `@test.cases` stacking pattern.
+---@param def_node table
+---@param source string
+---@param aliases table
+---@return DecoratorInfo[]
+local function collect_tryke_decorators(def_node, source, aliases)
+  local out = {}
+  for i = 0, def_node:named_child_count() - 1 do
+    local child = def_node:named_child(i)
+    if child:type() == "decorator" then
+      local info = classify_decorator(child, source, aliases)
+      if info then
+        table.insert(out, info)
+      end
+    end
+  end
+  return out
+end
+
+--- Walk upward from a doctest definition node to the enclosing class, if
+--- any. Tryke addresses class doctests with flat dotted names
+--- (`Counter.increment`), so the plugin flattens the same way.
+---@param node table
+---@param source string
+---@return string|nil
 local function find_parent_class_name(node, source)
   local parent = node:parent()
   if parent and parent:type() == "block" then
@@ -156,63 +253,90 @@ local function find_parent_class_name(node, source)
   return nil
 end
 
---- Return true if *decorated_definition_node* has a `@test.cases(...)`
---- decorator among its children. Used to suppress generic `@test.*`
---- matches when a `@test.cases` decorator is stacked on the same function:
---- the cases pattern owns the expansion, so the generic pattern would
---- otherwise register a redundant bare-function position.
----@param decorated_definition_node TSNode
+--- Does the expression `expr` look like a `test.case(...)` call, where
+--- the test name is either a direct tryke alias or reached via a module
+--- alias (e.g., `t.test.case(...)`)?
+---@param expr table
 ---@param source string
+---@param aliases table
 ---@return boolean
-local function has_cases_decorator(decorated_definition_node, source)
-  for i = 0, decorated_definition_node:named_child_count() - 1 do
-    local child = decorated_definition_node:named_child(i)
-    if child and child:type() == "decorator" then
-      local inner = child:named_child(0)
-      if inner and inner:type() == "call" then
-        local fn = inner:named_child(0)
-        if fn and fn:type() == "attribute" then
-          local obj = fn:named_child(0)
-          local attr = fn:named_child(1)
-          if
-            obj
-            and attr
-            and vim.treesitter.get_node_text(obj, source) == "test"
-            and vim.treesitter.get_node_text(attr, source) == "cases"
-          then
-            return true
-          end
-        end
-      end
+local function is_test_case_call(expr, source, aliases)
+  if expr:type() ~= "call" then
+    return false
+  end
+  local fn
+  for i = 0, expr:named_child_count() - 1 do
+    local c = expr:named_child(i)
+    if c:type() ~= "argument_list" then
+      fn = c
+      break
     end
+  end
+  if not fn or fn:type() ~= "attribute" then
+    return false
+  end
+  local obj = fn:named_child(0)
+  local attr = fn:named_child(1)
+  if not obj or not attr then
+    return false
+  end
+  if vim.treesitter.get_node_text(attr, source) ~= "case" then
+    return false
+  end
+  if obj:type() == "identifier" then
+    local name = vim.treesitter.get_node_text(obj, source)
+    return alias.is_tryke_symbol(aliases, source, name, "test")
+  end
+  if obj:type() == "attribute" then
+    local inner_obj = obj:named_child(0)
+    local inner_attr = obj:named_child(1)
+    if not inner_obj or not inner_attr or inner_obj:type() ~= "identifier" then
+      return false
+    end
+    local mod_name = vim.treesitter.get_node_text(inner_obj, source)
+    local mid_attr = vim.treesitter.get_node_text(inner_attr, source)
+    return mid_attr == "test" and alias.is_module(aliases, mod_name)
   end
   return false
 end
 
---- Expand a `@test.cases(...)` match into one position per case label.
---- Returns nil when the argument list has no enumerable cases (e.g. the
---- decorator argument is a non-literal expression), letting the caller
+--- Expand the arguments of a `@test.cases(...)` call into one position
+--- per enumerable case. Mirrors the three shapes the tryke discoverer
+--- accepts:
+---   * kwargs:  `@test.cases(zero={...}, one={...})`
+---   * list:    `@test.cases([("label", {...}), ...])`
+---   * typed:   `@test.cases(test.case("label", ...), ...)` — also
+---              recognised through module / symbol aliases so
+---              `t.test.case("label", ...)` and
+---              `tst.case("label", ...)` yield cases.
+--- Returns nil when no enumerable cases are detected, letting the caller
 --- fall back to a bare function position.
----
---- Each case gets the range of its own argument node (not the shared
---- decorated-definition range). Neotest nests positions by range
---- containment when `nested_tests = true`; giving every case the same
---- range causes them to stack as parent→child→grandchild instead of
---- rendering as siblings.
----@param cases_args TSNode
+---@param cases_call table
 ---@param func_name string
 ---@param file_path string
 ---@param source string
+---@param aliases table
 ---@return table[]|nil
-local function expand_cases(cases_args, func_name, file_path, source)
+local function expand_cases(cases_call, func_name, file_path, source, aliases)
+  local args_node
+  for i = 0, cases_call:named_child_count() - 1 do
+    local c = cases_call:named_child(i)
+    if c:type() == "argument_list" then
+      args_node = c
+      break
+    end
+  end
+  if not args_node then
+    return nil
+  end
+
   local positions = {}
 
-  for i = 0, cases_args:named_child_count() - 1 do
-    local child = cases_args:named_child(i)
+  for i = 0, args_node:named_child_count() - 1 do
+    local child = args_node:named_child(i)
     if child then
       local ctype = child:type()
       if ctype == "keyword_argument" then
-        -- Kwargs form: `@test.cases(zero={...}, one={...})`.
         local name_node = child:named_child(0)
         if name_node and name_node:type() == "identifier" then
           local label = vim.treesitter.get_node_text(name_node, source)
@@ -224,7 +348,6 @@ local function expand_cases(cases_args, func_name, file_path, source)
           })
         end
       elseif ctype == "list" then
-        -- List form: `@test.cases([("2 + 3", {...}), ...])`.
         for j = 0, child:named_child_count() - 1 do
           local elem = child:named_child(j)
           if elem and elem:type() == "tuple" and elem:named_child_count() >= 1 then
@@ -242,41 +365,26 @@ local function expand_cases(cases_args, func_name, file_path, source)
             end
           end
         end
-      elseif ctype == "call" then
-        -- Typed form: `@test.cases(test.case("my test", n=0, expected=0), ...)`.
-        -- Each positional argument is a `test.case(label, **kwargs)` call whose
-        -- first argument is a string literal label.
-        local fn = child:named_child(0)
-        if fn and fn:type() == "attribute" then
-          local obj = fn:named_child(0)
-          local attr = fn:named_child(1)
-          if
-            obj
-            and attr
-            and vim.treesitter.get_node_text(obj, source) == "test"
-            and vim.treesitter.get_node_text(attr, source) == "case"
-          then
-            local call_args
-            for k = 0, child:named_child_count() - 1 do
-              local c = child:named_child(k)
-              if c and c:type() == "argument_list" then
-                call_args = c
-                break
-              end
-            end
-            if call_args and call_args:named_child_count() >= 1 then
-              local first = call_args:named_child(0)
-              if first and first:type() == "string" then
-                local label = get_string_content(first, source)
-                if label then
-                  table.insert(positions, {
-                    type = "test",
-                    path = file_path,
-                    name = func_name .. "[" .. label .. "]",
-                    range = { child:range() },
-                  })
-                end
-              end
+      elseif ctype == "call" and is_test_case_call(child, source, aliases) then
+        local call_args
+        for k = 0, child:named_child_count() - 1 do
+          local c = child:named_child(k)
+          if c and c:type() == "argument_list" then
+            call_args = c
+            break
+          end
+        end
+        if call_args and call_args:named_child_count() >= 1 then
+          local first = call_args:named_child(0)
+          if first and first:type() == "string" then
+            local label = get_string_content(first, source)
+            if label then
+              table.insert(positions, {
+                type = "test",
+                path = file_path,
+                name = func_name .. "[" .. label .. "]",
+                range = { child:range() },
+              })
             end
           end
         end
@@ -290,16 +398,58 @@ local function expand_cases(cases_args, func_name, file_path, source)
   return nil
 end
 
---- Build neotest positions from a query match. Handles `@test.cases` by
---- expanding one decorated function into one position per case label; class
---- and function doctests by flattening class-qualified names; and the
---- `@test(name="...")` display-name form by attaching `_func_name`.
+--- Inspect a `with <call>(…):` to decide whether the call targets tryke's
+--- `describe`, either directly (`describe(...)`, via symbol alias), or
+--- through a module alias (`tryke.describe(...)` / `t.describe(...)`).
+--- Returns the string name used by tryke for that describe block or nil
+--- when the call is some other context manager.
+---@param call_node table
+---@param source string
+---@param aliases table
+---@return string|nil
+local function extract_describe_name(call_node, source, aliases)
+  local fn
+  for i = 0, call_node:named_child_count() - 1 do
+    local c = call_node:named_child(i)
+    if c:type() ~= "argument_list" then
+      fn = c
+      break
+    end
+  end
+  if not fn then
+    return nil
+  end
+  local is_describe = false
+  if fn:type() == "identifier" then
+    local name = vim.treesitter.get_node_text(fn, source)
+    is_describe = alias.is_tryke_symbol(aliases, source, name, "describe")
+  elseif fn:type() == "attribute" then
+    local obj = fn:named_child(0)
+    local attr = fn:named_child(1)
+    if obj and attr and obj:type() == "identifier" then
+      local obj_name = vim.treesitter.get_node_text(obj, source)
+      local attr_name = vim.treesitter.get_node_text(attr, source)
+      is_describe = attr_name == "describe" and alias.is_module(aliases, obj_name)
+    end
+  end
+  if not is_describe then
+    return nil
+  end
+  return extract_string_arg(call_node, source)
+end
+
+--- Build neotest positions from a query match. Routes matches by the
+--- shape of the captured definition node — module / function / class
+--- doctests, decorated functions, or `with describe(...)` namespaces —
+--- and defers tryke-specific recognition to the alias-aware helpers
+--- above so aliased imports are handled without duplicating patterns.
 ---@param file_path string
 ---@param source string
----@param captured_nodes table<string, TSNode>
+---@param captured_nodes table<string, table>
 ---@return table|table[]|nil
 function M.build_position(file_path, source, captured_nodes)
-  -- Module-level doctest (no test.name capture).
+  local aliases = alias.get(source)
+
   if captured_nodes["_module_docstring"] then
     local docstring_text = vim.treesitter.get_node_text(captured_nodes["_module_docstring"], source)
     if not docstring_text or not docstring_text:find(">>>") then
@@ -316,48 +466,77 @@ function M.build_position(file_path, source, captured_nodes)
     }
   end
 
-  -- Verify decorator patterns actually matched @test (treesitter predicates
-  -- may not be enforced in all environments, so check captured decorator
-  -- name in lua as a safety net).
-  if captured_nodes["_dec_name"] then
-    local dec_text = vim.treesitter.get_node_text(captured_nodes["_dec_name"], source)
-    if dec_text ~= "test" then
+  if captured_nodes["_docstring"] then
+    local docstring_text = vim.treesitter.get_node_text(captured_nodes["_docstring"], source)
+    if not docstring_text or not docstring_text:find(">>>") then
       return nil
     end
-  end
-  if captured_nodes["_dec_obj"] then
-    local dec_text = vim.treesitter.get_node_text(captured_nodes["_dec_obj"], source)
-    if dec_text ~= "test" then
+    local name_node = captured_nodes["test.name"]
+    local definition = captured_nodes["test.definition"]
+    if not name_node or not definition then
       return nil
     end
+    local name = vim.treesitter.get_node_text(name_node, source)
+    local doctest_name = name
+    local class_name = find_parent_class_name(definition, source)
+    if class_name then
+      doctest_name = class_name .. "." .. name
+    end
+    return {
+      type = "test",
+      path = file_path,
+      name = "doctest: " .. doctest_name,
+      _func_name = doctest_name,
+      _is_doctest = true,
+      range = { definition:range() },
+    }
   end
 
-  local cases_args = captured_nodes["_cases_args"]
-  local test_name_node = captured_nodes["test.name"]
+  if captured_nodes["_ns_call"] then
+    local name = extract_describe_name(captured_nodes["_ns_call"], source, aliases)
+    if not name then
+      return nil
+    end
+    local definition = captured_nodes["namespace.definition"]
+    return {
+      type = "namespace",
+      path = file_path,
+      name = name,
+      range = { definition:range() },
+    }
+  end
+
   local test_def_node = captured_nodes["test.definition"]
-
-  -- Suppress the generic `@test.<modifier>(...)` match when the same
-  -- decorated function also has `@test.cases(...)` — the dedicated cases
-  -- pattern owns the expansion, and we don't want a redundant bare
-  -- function position alongside the per-case ones.
-  if
-    not cases_args
-    and captured_nodes["_dec_attr"]
-    and test_def_node
-    and has_cases_decorator(test_def_node, source)
-  then
+  local test_name_node = captured_nodes["test.name"]
+  if not test_def_node or not test_name_node then
+    return nil
+  end
+  if test_def_node:type() ~= "decorated_definition" then
     return nil
   end
 
-  -- `@test.cases(...)` expansion — one position per case label.
-  if cases_args and test_name_node and test_def_node then
-    local func_name = vim.treesitter.get_node_text(test_name_node, source)
-    local expanded = expand_cases(cases_args, func_name, file_path, source)
+  local decorators = collect_tryke_decorators(test_def_node, source, aliases)
+  if #decorators == 0 then
+    return nil
+  end
+
+  local func_name = vim.treesitter.get_node_text(test_name_node, source)
+
+  local cases_info
+  local test_info
+  for _, info in ipairs(decorators) do
+    if info.kind == "cases" and not cases_info then
+      cases_info = info
+    elseif info.kind == "test" and not test_info then
+      test_info = info
+    end
+  end
+
+  if cases_info then
+    local expanded = expand_cases(cases_info.call, func_name, file_path, source, aliases)
     if expanded then
       return expanded
     end
-    -- No enumerable cases (unusual — e.g. dynamic decorator argument). Fall
-    -- back to a single bare-function position so the test is still visible.
     return {
       type = "test",
       path = file_path,
@@ -366,44 +545,20 @@ function M.build_position(file_path, source, captured_nodes)
     }
   end
 
-  local match_type
-  if captured_nodes["test.name"] then
-    match_type = "test"
-  elseif captured_nodes["namespace.name"] then
-    match_type = "namespace"
-  end
-  if not match_type then
-    return nil
-  end
-  local name = vim.treesitter.get_node_text(captured_nodes[match_type .. ".name"], source)
-  local definition = captured_nodes[match_type .. ".definition"]
+  local decorator = test_info or decorators[1]
   local position = {
-    type = match_type,
+    type = "test",
     path = file_path,
-    name = name,
-    range = { definition:range() },
+    name = func_name,
+    range = { test_def_node:range() },
   }
-  if match_type == "test" and captured_nodes["_docstring"] then
-    -- Verify the docstring actually contains `>>>`.
-    local docstring_text = vim.treesitter.get_node_text(captured_nodes["_docstring"], source)
-    if not docstring_text or not docstring_text:find(">>>") then
-      return nil
-    end
-    -- Function / class / method doctest — tryke addresses class doctests as
-    -- flat dotted names (`ClassName.method`) so we flatten here too.
-    local doctest_name = name
-    local class_name = find_parent_class_name(definition, source)
-    if class_name then
-      doctest_name = class_name .. "." .. name
-    end
-    position.name = "doctest: " .. doctest_name
-    position._func_name = doctest_name
-    position._is_doctest = true
-  elseif match_type == "test" then
-    local display_name = extract_display_name(definition, source)
+  -- Only `@test(...)` style decorators can supply a display name — modifier
+  -- decorators like `@test.skip("reason")` take a reason string, not a name.
+  if decorator.kind == "test" and decorator.call then
+    local display_name = extract_string_arg(decorator.call, source)
     if display_name then
       position.name = display_name
-      position._func_name = name
+      position._func_name = func_name
     end
   end
   return position
@@ -412,8 +567,6 @@ end
 function M.position_id(position, parents)
   local parent_names = {}
   for _, pos in ipairs(parents) do
-    -- Skip doctest parents (e.g. class doctests): tryke uses flat dotted
-    -- names like `ClassName.method` rather than parent-segmented IDs.
     if not pos._is_doctest then
       table.insert(parent_names, pos._func_name or pos.name)
     end
