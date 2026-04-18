@@ -49,6 +49,10 @@ describe("is_test_file", function()
   it("returns true for file with doctests but no tryke import", function()
     assert.is_true(ts.is_test_file(fixtures .. "lib_with_doctests.py"))
   end)
+
+  it("returns true for in-source file with __TRYKE_TESTING__ guard even if tryke import is late", function()
+    assert.is_true(ts.is_test_file(fixtures .. "late_in_source_test.py"))
+  end)
 end)
 
 describe("build_position", function()
@@ -539,6 +543,19 @@ describe("import alias support", function()
     local positions = parse_fixture("alias_guard_test.py")
     assert.is_true(vim.tbl_contains(names_of(positions), "test_basic"))
     assert.is_true(vim.tbl_contains(namespaces_of(positions), "Channel"))
+  end)
+
+  it("discovers in-source tests with late tryke imports", function()
+    local positions = parse_fixture("late_in_source_test.py")
+    local found = false
+    for _, pos in ipairs(positions) do
+      if pos._func_name == "late_test" then
+        assert.equal("works", pos.name)
+        found = true
+      end
+    end
+    assert.is_true(found, "expected late_test to be discovered past the 50-line cutoff")
+    assert.is_true(vim.tbl_contains(namespaces_of(positions), "late"))
   end)
 
   it("does not discover tests when a local def shadows an aliased name", function()

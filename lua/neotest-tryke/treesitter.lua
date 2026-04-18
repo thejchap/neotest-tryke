@@ -590,20 +590,29 @@ function M.is_test_file(file_path)
     return false
   end
   local has_tryke_import = false
+  local has_testing_guard = false
   local has_doctest = false
   local i = 0
   for line in f:lines() do
     i = i + 1
-    if i <= 50 and (line:find("from tryke import") or line:find("import tryke")) then
-      has_tryke_import = true
-      break
+    if i <= 50 then
+      if line:find("from tryke import") or line:find("import tryke") then
+        has_tryke_import = true
+        break
+      end
+      -- In-source testing pattern: `from tryke_guard import __TRYKE_TESTING__`
+      -- lives up with the regular imports even when the actual tryke imports
+      -- hide deep in the file inside the guard block.
+      if line:find("tryke_guard") or line:find("__TRYKE_TESTING__") then
+        has_testing_guard = true
+      end
     end
     if not has_doctest and line:find(">>>") then
       has_doctest = true
     end
   end
   f:close()
-  return has_tryke_import or has_doctest
+  return has_tryke_import or has_testing_guard or has_doctest
 end
 
 function M.is_tryke_project(root)
