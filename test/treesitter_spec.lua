@@ -358,6 +358,24 @@ def square_typed(n: int, expected: int) -> None:
     assert.is_false(vim.tbl_contains(names, "square_typed"))
   end)
 
+  it("assigns each case its own range so siblings don't nest", function()
+    -- When every case shared the decorator's range, neotest's nested_tests
+    -- logic stacked them as parent→child→grandchild in the summary tree.
+    local positions = collect_positions(source)
+    local cases = {}
+    for _, pos in ipairs(positions) do
+      if pos.name:match("^square%[") or pos.name:match("^square_typed%[") or pos.name:match("^add%[") then
+        table.insert(cases, pos)
+      end
+    end
+    local seen = {}
+    for _, pos in ipairs(cases) do
+      local key = table.concat(pos.range, ",")
+      assert.is_nil(seen[key], "cases share range " .. key .. " (would nest in neotest tree)")
+      seen[key] = pos.name
+    end
+  end)
+
   it("suppresses the generic match when @test.skip stacks on @test.cases", function()
     local stacked = [[
 from tryke import test

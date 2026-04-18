@@ -193,13 +193,18 @@ end
 --- Returns nil when the argument list has no enumerable cases (e.g. the
 --- decorator argument is a non-literal expression), letting the caller
 --- fall back to a bare function position.
+---
+--- Each case gets the range of its own argument node (not the shared
+--- decorated-definition range). Neotest nests positions by range
+--- containment when `nested_tests = true`; giving every case the same
+--- range causes them to stack as parent→child→grandchild instead of
+--- rendering as siblings.
 ---@param cases_args TSNode
 ---@param func_name string
 ---@param file_path string
----@param range integer[]
 ---@param source string
 ---@return table[]|nil
-local function expand_cases(cases_args, func_name, file_path, range, source)
+local function expand_cases(cases_args, func_name, file_path, source)
   local positions = {}
 
   for i = 0, cases_args:named_child_count() - 1 do
@@ -215,7 +220,7 @@ local function expand_cases(cases_args, func_name, file_path, range, source)
             type = "test",
             path = file_path,
             name = func_name .. "[" .. label .. "]",
-            range = range,
+            range = { child:range() },
           })
         end
       elseif ctype == "list" then
@@ -231,7 +236,7 @@ local function expand_cases(cases_args, func_name, file_path, range, source)
                   type = "test",
                   path = file_path,
                   name = func_name .. "[" .. label .. "]",
-                  range = range,
+                  range = { elem:range() },
                 })
               end
             end
@@ -268,7 +273,7 @@ local function expand_cases(cases_args, func_name, file_path, range, source)
                     type = "test",
                     path = file_path,
                     name = func_name .. "[" .. label .. "]",
-                    range = range,
+                    range = { child:range() },
                   })
                 end
               end
@@ -347,8 +352,7 @@ function M.build_position(file_path, source, captured_nodes)
   -- `@test.cases(...)` expansion — one position per case label.
   if cases_args and test_name_node and test_def_node then
     local func_name = vim.treesitter.get_node_text(test_name_node, source)
-    local range = { test_def_node:range() }
-    local expanded = expand_cases(cases_args, func_name, file_path, range, source)
+    local expanded = expand_cases(cases_args, func_name, file_path, source)
     if expanded then
       return expanded
     end
@@ -358,7 +362,7 @@ function M.build_position(file_path, source, captured_nodes)
       type = "test",
       path = file_path,
       name = func_name,
-      range = range,
+      range = { test_def_node:range() },
     }
   end
 
