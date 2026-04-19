@@ -291,10 +291,23 @@ local function build_server_spec(args)
         run_complete.set(true)
       end)
 
+      -- The server's `run` method filters against its cached Discoverer;
+      -- it never re-scans the filesystem on its own. Without a preceding
+      -- `discover` call the cache stays empty, the filter matches zero
+      -- tests, and every `tests/<path>::<name>` id we pass gets silently
+      -- dropped — producing a run_complete with no test_complete events
+      -- and the "every tree test will be reported as skipped" we saw
+      -- in neotest-tryke.log. rediscover is incremental so the cost is
+      -- negligible once the cache is warm.
+      log.debug("server: sending discover before run to warm the server cache")
+      local discover_future = server.send_request("discover", { root = root })
+      discover_future.wait()
+
       local params = {}
       if #test_ids > 0 then
         params.tests = test_ids
       end
+      log.debug("server: sending run with", #test_ids, "test id(s)")
       local response_future = server.send_request("run", params)
 
       run_complete.wait()
