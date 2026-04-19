@@ -254,6 +254,10 @@ local function build_server_spec(args)
       end
     end
   end
+  log.debug("build_server_spec: sending", #test_ids, "test id(s) to server")
+  for _, tid in ipairs(test_ids) do
+    log.trace("build_server_spec: test id =", tid)
+  end
 
   local output_file = nio.fn.tempname()
   local run_complete = nio.control.future()
@@ -282,26 +286,20 @@ local function build_server_spec(args)
           local test = tryke_result.test
           if test.file_path then
             local id = results_mod.build_id(root, test)
+            log.trace("server: test_complete id =", id, "status =", tryke_result.outcome and tryke_result.outcome.status)
             streamed_results[id] = results_mod.convert_result(tryke_result)
           end
         end
       end)
 
+      server.on_notification("run_start", function(msg)
+        local tests = msg.params and msg.params.tests or {}
+        log.debug("server: run_start — server picked up", #tests, "test(s)")
+      end)
+
       server.on_notification("run_complete", function()
         run_complete.set(true)
       end)
-
-      -- The server's `run` method filters against its cached Discoverer;
-      -- it never re-scans the filesystem on its own. Without a preceding
-      -- `discover` call the cache stays empty, the filter matches zero
-      -- tests, and every `tests/<path>::<name>` id we pass gets silently
-      -- dropped — producing a run_complete with no test_complete events
-      -- and the "every tree test will be reported as skipped" we saw
-      -- in neotest-tryke.log. rediscover is incremental so the cost is
-      -- negligible once the cache is warm.
-      log.debug("server: sending discover before run to warm the server cache")
-      local discover_future = server.send_request("discover", { root = root })
-      discover_future.wait()
 
       local params = {}
       if #test_ids > 0 then
