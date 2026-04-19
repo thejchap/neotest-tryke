@@ -11,7 +11,9 @@ while getopts 'ilEve:' opt; do
 	esac
 done
 
-INIT='lua package.path = "lua/?.lua;lua/?/init.lua;" .. package.path'
+NEOTEST_RTP="$HOME/.local/share/nvim/lazy/neotest"
+NIO_RTP="$HOME/.local/share/nvim/lazy/nvim-nio"
+INIT='lua package.path = "lua/?.lua;lua/?/init.lua;" .. package.path; if vim.fn.isdirectory("'"$NIO_RTP"'") == 1 then vim.opt.runtimepath:append("'"$NIO_RTP"'") end; if vim.fn.isdirectory("'"$NEOTEST_RTP"'") == 1 then vim.opt.runtimepath:append("'"$NEOTEST_RTP"'") end'
 
 if [ -n "$lua_expr" ]; then
 	nvim --headless --noplugin -u NONE --cmd "$INIT" -c "lua $lua_expr" -c 'quitall!'

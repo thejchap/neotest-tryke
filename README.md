@@ -40,6 +40,7 @@ all options are optional. Defaults are shown below.
 require("neotest-tryke")({
   tryke_command = "tryke",   -- path to tryke binary
   mode = "direct",           -- "direct" (subprocess), "server" (persistent server), or "auto"
+  discovery = "treesitter",  -- "treesitter" (in-process) or "cli" (shell out to tryke)
   args = {},                 -- extra CLI arguments passed to tryke
   workers = nil,             -- number of parallel workers (nil = tryke default)
   fail_fast = false,         -- stop on first failure
@@ -56,6 +57,7 @@ require("neotest-tryke")({
 |--------|------|---------|-------------|
 | `tryke_command` | `string` | `"tryke"` | Path to the tryke binary |
 | `mode` | `string` | `"direct"` | Execution mode: `"direct"`, `"server"`, or `"auto"` |
+| `discovery` | `string` | `"treesitter"` | Test discovery backend: `"treesitter"` (in-process, fast) or `"cli"` (delegate to `tryke test --collect-only`) |
 | `args` | `string[]` | `{}` | Extra CLI arguments passed to tryke |
 | `workers` | `number\|nil` | `nil` | Number of parallel workers |
 | `fail_fast` | `boolean` | `false` | Stop on first failure |
@@ -63,6 +65,12 @@ require("neotest-tryke")({
 | `server.host` | `string` | `"127.0.0.1"` | Server host |
 | `server.auto_start` | `boolean` | `true` | Auto-start server if not running |
 | `server.auto_stop` | `boolean` | `true` | Auto-stop server on exit |
+
+### discovery mode
+
+`discovery = "treesitter"` (default) parses each file in-process with the same TreeSitter queries the plugin ships. Fastest path and has no subprocess cost.
+
+`discovery = "cli"` delegates each file to `tryke test <path> --collect-only --reporter json` and builds the position tree from its JSON output. Slower per file (subprocess overhead) but always matches whatever the tryke CLI itself recognises — useful when a new tryke discovery shape lands before the plugin's queries catch up, or when you'd rather have one source of truth. If the CLI call fails the plugin logs the error and falls back to TreeSitter for that file, so a missing/broken binary doesn't take down discovery entirely.
 
 ## conflict with neotest-python
 

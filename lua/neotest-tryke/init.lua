@@ -109,6 +109,19 @@ function adapter.discover_positions(file_path)
   if not ts.is_test_file(file_path) then
     return nil
   end
+  if cfg.discovery == "cli" then
+    local root = adapter.root(file_path)
+    local ok, result = pcall(
+      require("neotest-tryke.cli_discovery").discover,
+      file_path,
+      root,
+      cfg.tryke_command
+    )
+    if ok then
+      return result
+    end
+    log.warn("neotest-tryke: cli discovery failed, falling back to treesitter: " .. tostring(result))
+  end
   return lib.treesitter.parse_positions(file_path, ts.query, {
     build_position = 'require("neotest-tryke.treesitter").build_position',
     position_id = ts.position_id,
