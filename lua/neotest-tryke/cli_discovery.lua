@@ -1,7 +1,7 @@
 local M = {}
 
 local Tree = require("neotest.types").Tree
-local log = require("neotest.logging")
+local log = require("neotest-tryke.logger")
 
 local function relpath(abs, root)
   if not root then
@@ -152,25 +152,45 @@ end
 ---@param file_path string
 ---@param root string
 ---@param tryke_command string
----@return neotest.Tree|nil
+---@return table|nil
 function M.discover(file_path, root, tryke_command)
   local rel = relpath(file_path, root)
   local cmd = { tryke_command, "test", rel, "--collect-only", "--reporter", "json" }
+  log.debug("cli_discover: spawn", table.concat(cmd, " "), "cwd =", root)
   local ok, result = pcall(function()
     return vim.system(cmd, { cwd = root, text = true }):wait()
   end)
   if not ok then
+    log.error("cli_discover: vim.system threw for", tryke_command, "—", tostring(result))
     error("failed to run " .. tryke_command .. ": " .. tostring(result))
   end
   if result.code ~= 0 then
     log.warn(
-      "neotest-tryke cli discover exit " .. result.code .. " for " .. file_path .. ": " .. (result.stderr or "")
+      "cli_discover: exit",
+      result.code,
+      "for",
+      file_path,
+      "stderr:",
+      (result.stderr or ""):sub(1, 500)
     )
     error("tryke --collect-only exited " .. result.code)
   end
   local tests = parse_collect_output(result.stdout)
+  log.debug("cli_discover:", file_path, "→", #tests, "test(s)")
   if #tests == 0 then
     return nil
+  end
+  for _, t in ipairs(tests) do
+    log.trace(
+      "cli_discover: test name =",
+      t.name,
+      "groups =",
+      t.groups,
+      "case_label =",
+      t.case_label,
+      "line =",
+      t.line_number
+    )
   end
   local file_range = { 0, 0, count_lines(file_path), 0 }
   local list = build_tree_list(file_path, tests, file_range)

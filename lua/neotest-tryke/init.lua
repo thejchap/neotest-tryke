@@ -4,10 +4,10 @@ local config = require("neotest-tryke.config")
 local ts = require("neotest-tryke.treesitter")
 local results_mod = require("neotest-tryke.results")
 local server = require("neotest-tryke.server")
+local log = require("neotest-tryke.logger")
 
 local cfg = config.get()
-
-local log = require("neotest.logging")
+log.set_level(cfg.log_level)
 
 local function shell_escape(s)
   return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -107,8 +107,10 @@ end
 
 function adapter.discover_positions(file_path)
   if not ts.is_test_file(file_path) then
+    log.trace("discover_positions: skip (not a test file):", file_path)
     return nil
   end
+  log.debug("discover_positions:", file_path, "mode =", cfg.discovery)
   if cfg.discovery == "cli" then
     local root = adapter.root(file_path)
     local ok, result = pcall(
@@ -120,7 +122,7 @@ function adapter.discover_positions(file_path)
     if ok then
       return result
     end
-    log.warn("neotest-tryke: cli discovery failed, falling back to treesitter: " .. tostring(result))
+    log.warn("discover_positions: cli discovery failed, falling back to treesitter:", tostring(result))
   end
   return lib.treesitter.parse_positions(file_path, ts.query, {
     build_position = 'require("neotest-tryke.treesitter").build_position',
@@ -198,9 +200,9 @@ local function build_direct_spec(args)
   end
   local cmd_str = table.concat(cmd_parts, " ")
 
-  log.info("build_direct_spec: command =", cmd_str)
-  log.info("build_direct_spec: results_path =", results_path)
-  log.info("build_direct_spec: cwd =", root)
+  log.debug("build_direct_spec: command =", cmd_str)
+  log.debug("build_direct_spec: results_path =", results_path)
+  log.debug("build_direct_spec: cwd =", root)
 
   return {
     command = { "sh", "-c", cmd_str .. " > " .. shell_escape(results_path) },
@@ -221,8 +223,12 @@ local function build_direct_spec(args)
             local test = tryke_result.test
             if test.file_path then
               local id = results_mod.build_id(root, test)
-              streamed[id] = results_mod.convert_result(tryke_result)
+              local converted = results_mod.convert_result(tryke_result)
+              log.trace("stream: test_complete", id, "status =", converted.status)
+              streamed[id] = converted
             end
+          elseif ok and decoded then
+            log.trace("stream: event", decoded.event)
           end
         end
         return streamed
@@ -346,7 +352,13 @@ local function build_server_spec(args)
 end
 
 function adapter.build_spec(args)
-  log.info("build_spec called, mode =", cfg.mode)
+  local position = args.tree and args.tree:data()
+  log.info(
+    "build_spec: mode =",
+    cfg.mode,
+    "position =",
+    position and (position.type .. " " .. position.id) or "<unknown>"
+  )
   local use_server = false
 
   if cfg.mode == "server" then
@@ -380,29 +392,34 @@ function adapter.results(spec, result, tree)
   local output_path = spec.context.results_path or result.output
   local root = spec.context.root
 
-  log.info("results() called")
-  log.info("  output_path =", output_path)
-  log.info("  root =", root)
-  log.info("  exit code =", result.code)
-  log.info("  result.output =", result.output)
+  log.info("results: exit code =", result.code, "output_path =", output_path, "root =", root)
 
   local content = lib.files.read(output_path)
-  log.info("  raw output length =", content and #content or "nil")
-  log.info("  raw output =", content and content:sub(1, 2000) or "nil")
+  log.debug("results: raw output length =", content and #content or "nil")
+  log.trace("results: raw output =", content and content:sub(1, 2000) or "nil")
 
   if not content or content == "" then
-    log.info("  EMPTY OUTPUT, returning no results")
-    return {}
+    log.warn("results: tryke produced no output — every tree test will be reported as skipped")
+    local empty = {}
+    for _, pos in tree:iter() do
+      if pos.type == "test" then
+        empty[pos.id] = { status = "skipped", short = pos.name .. ": not run" }
+      end
+    end
+    return empty
   end
 
   local parsed = results_mod.parse_output(content, root)
-  log.info("  parsed IDs =", vim.tbl_keys(parsed))
+  log.debug("results: parsed", vim.tbl_count(parsed), "ids from tryke output")
+  for id in pairs(parsed) do
+    log.trace("results: parsed id", id, "status =", parsed[id].status)
+  end
 
-  local expected_ids = {}
+  local unmatched = {}
   for _, pos in tree:iter() do
     if pos.type == "test" then
-      table.insert(expected_ids, pos.id)
       if not parsed[pos.id] then
+        table.insert(unmatched, pos.id)
         parsed[pos.id] = {
           status = "skipped",
           short = pos.name .. ": not run",
@@ -410,7 +427,15 @@ function adapter.results(spec, result, tree)
       end
     end
   end
-  log.info("  expected IDs =", expected_ids)
+  if #unmatched > 0 then
+    log.warn(
+      "results:",
+      #unmatched,
+      "tree test(s) had no matching tryke result — id format drift? sample:",
+      unmatched[1]
+    )
+    log.debug("results: unmatched ids =", unmatched)
+  end
 
   return parsed
 end
@@ -418,6 +443,8 @@ end
 setmetatable(adapter, {
   __call = function(_, opts)
     cfg = config.get(opts)
+    log.set_level(cfg.log_level)
+    log.info("setup:", "discovery =", cfg.discovery, "mode =", cfg.mode, "log_level =", cfg.log_level)
     return adapter
   end,
 })

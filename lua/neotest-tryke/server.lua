@@ -1,4 +1,5 @@
 local nio = require("nio")
+local log = require("neotest-tryke.logger")
 
 local M = {}
 
@@ -14,6 +15,8 @@ function M.is_connected()
 end
 
 function M.connect(host, port)
+  local endpoint = host .. ":" .. tostring(port)
+  log.debug("server: connect", endpoint)
   local future = nio.control.future()
 
   handle = vim.uv.new_tcp()
@@ -21,6 +24,7 @@ function M.connect(host, port)
 
   vim.uv.tcp_connect(handle, host, port, function(err)
     if err then
+      log.debug("server: connect failed", endpoint, "—", err)
       handle:close()
       handle = nil
       future.set_error(err)
@@ -29,6 +33,7 @@ function M.connect(host, port)
 
     handle:read_start(function(read_err, data)
       if read_err then
+        log.warn("server: read error on", endpoint, "—", read_err)
         M.disconnect()
         return
       end
@@ -37,6 +42,7 @@ function M.connect(host, port)
       end
     end)
 
+    log.debug("server: connected", endpoint)
     future.set(true)
   end)
 
@@ -63,6 +69,8 @@ function M.send_request(method, params)
     method = method,
     params = params or {},
   }) .. "\n"
+
+  log.trace("server: request id =", id, "method =", method, "params =", params)
 
   local future = nio.control.future()
   pending_requests[id] = future
@@ -110,6 +118,9 @@ end
 function M.ensure_server(config)
   local host = config.server.host
   local port = config.server.port
+  local endpoint = host .. ":" .. tostring(port)
+
+  log.info("server: ensure_server", endpoint)
 
   local ok = pcall(function()
     local f = M.connect(host, port)
@@ -120,28 +131,36 @@ function M.ensure_server(config)
   end)
 
   if ok then
+    log.info("server: reusing existing server at", endpoint)
     return true
   end
 
   M.disconnect()
 
   if not config.server.auto_start then
+    log.error("server: not reachable at", endpoint, "and auto_start is disabled")
     error("tryke server not reachable and auto_start is disabled")
   end
 
   local stdout = vim.uv.new_pipe()
   local stderr = vim.uv.new_pipe()
 
-  server_process = vim.uv.spawn(config.tryke_command or "tryke", {
+  local cmd = config.tryke_command or "tryke"
+  log.info("server: spawning", cmd, "server --port", port)
+  server_process = vim.uv.spawn(cmd, {
     args = { "server", "--port", tostring(port) },
     stdio = { nil, stdout, stderr },
-  }, function()
+  }, function(code, signal)
+    log.info("server: process exited code =", code, "signal =", signal)
     server_process = nil
   end)
 
   if not server_process then
+    log.error("server: failed to spawn", cmd)
     error("failed to spawn tryke server")
   end
+
+  log.debug("server: spawned pid", server_process and server_process:get_pid() or "<unknown>")
 
   local timeout = 10000
   local interval = 100
@@ -160,12 +179,14 @@ function M.ensure_server(config)
     end)
 
     if connected then
+      log.info("server: ready after", elapsed, "ms")
       return true
     end
 
     M.disconnect()
   end
 
+  log.error("server: failed to start within", timeout, "ms")
   M.stop_server()
   error("tryke server failed to start within timeout")
 end

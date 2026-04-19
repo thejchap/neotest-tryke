@@ -41,6 +41,7 @@ require("neotest-tryke")({
   tryke_command = "tryke",   -- path to tryke binary
   mode = "direct",           -- "direct" (subprocess), "server" (persistent server), or "auto"
   discovery = "treesitter",  -- "treesitter" (in-process) or "cli" (shell out to tryke)
+  log_level = "info",        -- "trace" | "debug" | "info" | "warn" | "error"
   args = {},                 -- extra CLI arguments passed to tryke
   workers = nil,             -- number of parallel workers (nil = tryke default)
   fail_fast = false,         -- stop on first failure
@@ -58,6 +59,7 @@ require("neotest-tryke")({
 | `tryke_command` | `string` | `"tryke"` | Path to the tryke binary |
 | `mode` | `string` | `"direct"` | Execution mode: `"direct"`, `"server"`, or `"auto"` |
 | `discovery` | `string` | `"treesitter"` | Test discovery backend: `"treesitter"` (in-process, fast) or `"cli"` (delegate to `tryke test --collect-only`) |
+| `log_level` | `string\|number` | `"info"` | Plugin log verbosity. String or numeric `vim.log.levels`. Logs go to `stdpath("log")/neotest-tryke.log`. |
 | `args` | `string[]` | `{}` | Extra CLI arguments passed to tryke |
 | `workers` | `number\|nil` | `nil` | Number of parallel workers |
 | `fail_fast` | `boolean` | `false` | Stop on first failure |
@@ -65,6 +67,22 @@ require("neotest-tryke")({
 | `server.host` | `string` | `"127.0.0.1"` | Server host |
 | `server.auto_start` | `boolean` | `true` | Auto-start server if not running |
 | `server.auto_stop` | `boolean` | `true` | Auto-stop server on exit |
+
+### logging
+
+All plugin activity is written to a dedicated file at `stdpath("log")/neotest-tryke.log` (typically `~/.local/state/nvim/log/neotest-tryke.log`). Set `log_level` to crank verbosity without touching the shared `neotest.log`:
+
+- `"info"` (default) — lifecycle only: setup, build_spec, server up/down, run complete.
+- `"debug"` — adds exact command line, cwd, results path, id counts, unmatched-id warnings.
+- `"trace"` — adds every streamed JSON event and each discovered test with its groups/case_label.
+
+Tail it while diagnosing a failing run:
+
+```sh
+tail -F ~/.local/state/nvim/log/neotest-tryke.log
+```
+
+If neotest says "the test run did not record any output" or every test is getting reported as failed/skipped, `log_level = "trace"` is the fastest path to seeing whether it's an id-format drift, a tryke binary issue, or a stale server on the port.
 
 ### discovery mode
 

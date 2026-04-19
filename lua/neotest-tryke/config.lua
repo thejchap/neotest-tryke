@@ -10,6 +10,13 @@ local defaults = {
   -- tryke CLI itself recognises — useful when new tryke discovery shapes
   -- land before the plugin's treesitter queries catch up.
   discovery = "treesitter",
+  -- Verbosity of `stdpath("log")/neotest-tryke.log`. Accepts a string
+  -- ("trace" | "debug" | "info" | "warn" | "error") or a numeric
+  -- `vim.log.levels` value. Crank to "debug" to see the exact command
+  -- line invoked per run, or to "trace" to see every JSON event streamed
+  -- back from tryke — useful when tests are "failing" for reasons that
+  -- aren't assertion failures (id mismatch, missing binary, etc.).
+  log_level = "info",
   args = {},
   server = {
     port = 2337,
