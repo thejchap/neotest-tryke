@@ -4,10 +4,6 @@ local TRYKE_SYMBOLS = { describe = true, test = true, fixture = true, Depends = 
 
 local cache = {}
 
-local function escape(name)
-  return (name:gsub("(%W)", "%%%1"))
-end
-
 local function process_names(names, symbol_aliases)
   local comment = names:find("#", 1, true)
   if comment then
@@ -28,9 +24,37 @@ local function process_names(names, symbol_aliases)
   end
 end
 
+--- Walk the source once and record every top-level `def`/`class`/simple
+--- assignment name. The returned set powers the shadowing check in
+--- `is_tryke_symbol` in O(1) without rescanning source on each call —
+--- critical for large generated test suites where naive per-decorator
+--- scanning is quadratic in file size.
+local function record_top_level_defs(line, locally_defined)
+  -- Only top-level lines (no leading indent) can shadow imported names.
+  local first = line:sub(1, 1)
+  if first == " " or first == "\t" or first == "#" or first == "" then
+    return
+  end
+  local name = line:match("^def%s+([%w_]+)")
+    or line:match("^async%s+def%s+([%w_]+)")
+    or line:match("^class%s+([%w_]+)")
+  if name then
+    locally_defined[name] = true
+    return
+  end
+  -- Simple assignment `<name> = …`. Require a word char on the LHS so we
+  -- don't misfire on `obj.attr =` or `x[0] =`; require the `=` to not be
+  -- `==` so comparisons in early expression statements are skipped.
+  local assigned = line:match("^([%w_]+)%s*=[^=]")
+  if assigned then
+    locally_defined[assigned] = true
+  end
+end
+
 local function parse(source)
   local module_aliases = {}
   local symbol_aliases = {}
+  local locally_defined = {}
 
   local i = 1
   local len = #source
@@ -40,6 +64,8 @@ local function parse(source)
     local consumed_to = line_end + 1
 
     local stripped = line:match("^%s*(.-)%s*$") or ""
+
+    record_top_level_defs(line, locally_defined)
 
     do
       local alias = stripped:match("^import%s+tryke%s+as%s+([%w_]+)%s*$")
@@ -83,13 +109,17 @@ local function parse(source)
     i = consumed_to
   end
 
-  return { module = module_aliases, symbol = symbol_aliases }
+  return {
+    module = module_aliases,
+    symbol = symbol_aliases,
+    locally_defined = locally_defined,
+  }
 end
 
 --- Return the alias table for *source*, building it on first request and
 --- caching the result. Callers may treat the returned table as immutable.
 ---@param source string
----@return { module: table<string, boolean>, symbol: table<string, string> }
+---@return { module: table<string, boolean>, symbol: table<string, string>, locally_defined: table<string, boolean> }
 function M.get(source)
   local cached = cache[source]
   if cached then
@@ -113,52 +143,32 @@ function M.is_module(aliases, name)
   return name == "tryke"
 end
 
-local function has_top_level_def(source, name)
-  local esc = escape(name)
-  if source:find("^def%s+" .. esc .. "%s*[%(]") then
-    return true
-  end
-  if source:find("\ndef%s+" .. esc .. "%s*[%(]") then
-    return true
-  end
-  if source:find("^async%s+def%s+" .. esc .. "%s*[%(]") then
-    return true
-  end
-  if source:find("\nasync%s+def%s+" .. esc .. "%s*[%(]") then
-    return true
-  end
-  if source:find("^class%s+" .. esc .. "%s*[%(:]") then
-    return true
-  end
-  if source:find("\nclass%s+" .. esc .. "%s*[%(:]") then
-    return true
-  end
-  if source:find("^" .. esc .. "%s*=[^=]") then
-    return true
-  end
-  if source:find("\n" .. esc .. "%s*=[^=]") then
-    return true
-  end
-  return false
-end
-
 --- Does the bare name *name* resolve to the tryke symbol *canon*?
 ---
 --- Matches when either (a) `name` is explicitly aliased to `canon` via
 --- `from tryke import <canon> [as <name>]`, or (b) `name` is literally
 --- `canon` — the legacy heuristic that keeps snippet-style test files
 --- working even with no visible import. A top-level `def`/`class`/
---- assignment shadows in either case, matching Python scoping.
+--- assignment in the same module shadows in either case, matching
+--- Python scoping.
+---
+--- The `source` parameter is accepted for API stability; the actual
+--- shadowing check reads the pre-computed `locally_defined` set from
+--- `aliases`.
 ---@param aliases table
----@param source string
+---@param _source string
 ---@param name string
 ---@param canon string
 ---@return boolean
-function M.is_tryke_symbol(aliases, source, name, canon)
-  if has_top_level_def(source, name) then
+function M.is_tryke_symbol(aliases, _source, name, canon)
+  -- Fast path: name can't possibly refer to the tryke symbol. This short-
+  -- circuit keeps us from doing any set lookup for the flood of unrelated
+  -- decorators (`@overload`, `@property`, `@staticmethod`, …) that show
+  -- up in real codebases.
+  if name ~= canon and aliases.symbol[name] ~= canon then
     return false
   end
-  return aliases.symbol[name] == canon or name == canon
+  return not aliases.locally_defined[name]
 end
 
 return M
