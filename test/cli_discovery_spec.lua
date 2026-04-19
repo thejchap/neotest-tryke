@@ -149,4 +149,42 @@ describe("cli_discovery", function()
     end)
     assert.is_nil(tree)
   end)
+
+  it("resolves per-case source lines for @test.cases rows", function()
+    -- Write a real file so find_case_line has something to scan.
+    local tmp = vim.fn.tempname() .. ".py"
+    local f = assert(io.open(tmp, "w"))
+    f:write(table.concat({
+      "from tryke import expect, test",
+      "",
+      "@test.cases(",
+      '    test.case("zero", n=0, expected=0),',
+      '    test.case("one", n=1, expected=1),',
+      "    ten={\"n\": 10, \"expected\": 100},",
+      ")",
+      "def square(n: int, expected: int) -> None:",
+      "    expect(n * n).to_equal(expected)",
+    }, "\n"))
+    f:close()
+    -- `line_number` matches the decorated function, just like tryke emits.
+    local tree
+    with_mock_system({ emit({
+      { name = "square", file_path = tmp, line_number = 8, case_label = "zero", case_index = 0 },
+      { name = "square", file_path = tmp, line_number = 8, case_label = "one", case_index = 1 },
+      { name = "square", file_path = tmp, line_number = 8, case_label = "ten", case_index = 2 },
+    }) }, function()
+      tree = cli.discover(tmp, "/tmp", "tryke")
+    end)
+    os.remove(tmp)
+
+    local lines_by_id = {}
+    for _, pos in ipairs(collect(tree)) do
+      if pos.type == "test" then
+        lines_by_id[pos.id] = pos.range[1] + 1
+      end
+    end
+    assert.equal(4, lines_by_id[tmp .. "::square[zero]"], "typed form zero → line 4")
+    assert.equal(5, lines_by_id[tmp .. "::square[one]"], "typed form one → line 5")
+    assert.equal(6, lines_by_id[tmp .. "::square[ten]"], "kwargs form ten → line 6")
+  end)
 end)

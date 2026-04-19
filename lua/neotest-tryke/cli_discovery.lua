@@ -26,6 +26,84 @@ local function count_lines(path)
   return count
 end
 
+local source_cache = setmetatable({}, { __mode = "v" })
+
+--- Read a file's lines once and cache the resulting array. Per-case line
+--- resolution has to look at every case on the decorator, so reading the
+--- file once up-front beats streaming it per case.
+---@param path string
+---@return string[]
+local function read_lines(path)
+  local cached = source_cache[path]
+  if cached then
+    return cached
+  end
+  local f = io.open(path, "r")
+  if not f then
+    return {}
+  end
+  local lines = {}
+  for line in f:lines() do
+    lines[#lines + 1] = line
+  end
+  f:close()
+  source_cache[path] = lines
+  return lines
+end
+
+--- Patterns that identify the *origin line* of a single `@test.cases` case
+--- inside a file. `test.case("label", …)` (typed form), `label=` (kwargs
+--- form) and `("label", {…})` (list form) each leave a distinctive
+--- substring on one line. We require the literal label string — with its
+--- quotes, where applicable — so we don't false-positive on test bodies
+--- that happen to mention the label somewhere below the decorator.
+---@param label string
+---@return string[]
+local function case_line_patterns(label)
+  -- Lua-pattern-escape the label so labels with magic chars (e.g.
+  -- "2 + 3") still match literally.
+  local escaped = label:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+  return {
+    'test%.case%("' .. escaped .. '"',
+    "test%.case%('" .. escaped .. "'",
+    '%("' .. escaped .. '"%s*,',
+    "%('" .. escaped .. "'%s*,",
+    "^%s*" .. escaped .. "%s*=",
+  }
+end
+
+--- Locate the source line that declares the case whose label is *label*.
+--- Anchor the search near *start_line* — the decorator's line range is
+--- typically within a few dozen lines of the decorated function — so a
+--- label that happens to appear in an unrelated test body further down
+--- doesn't win. Falls back to `start_line` if nothing matches.
+---@param file_path string
+---@param label string
+---@param start_line number
+---@return number
+local function find_case_line(file_path, label, start_line)
+  local lines = read_lines(file_path)
+  if #lines == 0 then
+    return start_line
+  end
+  local patterns = case_line_patterns(label)
+  local lo = math.max(1, start_line - 60)
+  local hi = math.min(#lines, start_line + 120)
+  local best
+  for i = lo, hi do
+    local line = lines[i]
+    for _, pattern in ipairs(patterns) do
+      if line:find(pattern) then
+        if best == nil or math.abs(i - start_line) < math.abs(best - start_line) then
+          best = i
+        end
+        break
+      end
+    end
+  end
+  return best or start_line
+end
+
 local function parse_collect_output(stdout)
   local tests = {}
   for line in (stdout or ""):gmatch("[^\n]+") do
@@ -55,10 +133,20 @@ local function build_test_position(file_path, test)
   local display = test.display_name
   local has_display = type(display) == "string" and display ~= "" and display ~= test.name
 
+  -- For parametrized cases, `line_number` is the decorated function's line
+  -- — every case for the same function would otherwise share it and the
+  -- sign column would stack all their pass/fail markers on that one line.
+  -- Scan the source for the exact `test.case("label", …)` / kwarg / tuple
+  -- declaration so each case gets a per-line range.
+  local line = test.line_number or 1
+  if type(test.case_label) == "string" and test.case_label ~= "" then
+    line = find_case_line(file_path, test.case_label, line)
+  end
+
   local position = {
     type = "test",
     path = file_path,
-    range = { (test.line_number or 1) - 1, 0, (test.line_number or 1) - 1, 0 },
+    range = { line - 1, 0, line - 1, 0 },
   }
 
   if test.case_label and test.case_label ~= vim.NIL and test.case_label ~= "" then
