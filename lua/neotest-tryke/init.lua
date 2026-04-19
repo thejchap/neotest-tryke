@@ -38,8 +38,67 @@ local excluded_dirs = {
   [".tox"] = true,
 }
 
-function adapter.filter_dir(name)
-  return not excluded_dirs[name]
+--- Parse the `[tool.tryke] exclude = [...]` list out of pyproject.toml.
+--- Mirrors `tryke_config::TrykeConfig::from_toml_str` in the Rust crate
+--- so discovery in the plugin respects whatever the project has already
+--- told the tryke CLI to skip (e.g. the 45K-line benchmark suites).
+---@param pyproject_path string
+---@return string[]
+local function parse_tryke_excludes(pyproject_path)
+  local f = io.open(pyproject_path, "r")
+  if not f then
+    return {}
+  end
+  local content = f:read("*a")
+  f:close()
+  -- Anchor on `[tool.tryke]` and stop at the next `[section]` header (or
+  -- end-of-file). `.-` is lazy so we grab only this section's body.
+  local section = content:match("%[tool%.tryke%]%s*\n(.-)\n%[[%w_%.]+%]")
+    or content:match("%[tool%.tryke%]%s*\n(.-)$")
+  if not section then
+    return {}
+  end
+  local raw = section:match("exclude%s*=%s*%[(.-)%]")
+  if not raw then
+    return {}
+  end
+  local list = {}
+  for entry in raw:gmatch('"([^"]+)"') do
+    table.insert(list, entry)
+  end
+  for entry in raw:gmatch("'([^']+)'") do
+    table.insert(list, entry)
+  end
+  return list
+end
+
+local excludes_cache = {}
+
+local function get_project_excludes(root)
+  if root == nil then
+    return {}
+  end
+  local cached = excludes_cache[root]
+  if cached then
+    return cached
+  end
+  local list = parse_tryke_excludes(root .. "/pyproject.toml")
+  excludes_cache[root] = list
+  return list
+end
+
+function adapter.filter_dir(name, rel_path, root)
+  if excluded_dirs[name] then
+    return false
+  end
+  if rel_path ~= nil then
+    for _, pattern in ipairs(get_project_excludes(root)) do
+      if rel_path == pattern then
+        return false
+      end
+    end
+  end
+  return true
 end
 
 function adapter.is_test_file(file_path)
