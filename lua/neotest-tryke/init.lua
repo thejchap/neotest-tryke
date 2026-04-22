@@ -237,6 +237,10 @@ local function build_direct_spec(args)
   }
 end
 
+local function generate_run_id()
+  return string.format("neotest-%d-%x", vim.fn.getpid(), vim.uv.hrtime())
+end
+
 local function build_server_spec(args)
   local tree = args.tree
   local position = tree:data()
@@ -260,7 +264,7 @@ local function build_server_spec(args)
   end
 
   local output_file = nio.fn.tempname()
-  local run_complete = nio.control.future()
+  local run_id = generate_run_id()
 
   return {
     command = { "true" },
@@ -278,10 +282,20 @@ local function build_server_spec(args)
       local output_lines = {}
       local streamed_results = {}
 
+      -- Server broadcasts every run's notifications on a shared channel;
+      -- drop anything that isn't tagged with our run_id so a concurrent
+      -- client (or a watcher rediscovery) can't pollute our results.
+      local function for_this_run(msg)
+        return msg.params and msg.params.run_id == run_id
+      end
+
       server.on_notification("test_complete", function(msg)
+        if not for_this_run(msg) then
+          return
+        end
         local line = vim.json.encode({ event = "test_complete", result = msg.params.result })
         table.insert(output_lines, line)
-        if msg.params and msg.params.result then
+        if msg.params.result then
           local tryke_result = msg.params.result
           local test = tryke_result.test
           if test.file_path then
@@ -293,22 +307,24 @@ local function build_server_spec(args)
       end)
 
       server.on_notification("run_start", function(msg)
-        local tests = msg.params and msg.params.tests or {}
+        if not for_this_run(msg) then
+          return
+        end
+        local tests = msg.params.tests or {}
         log.debug("server: run_start — server picked up", #tests, "test(s)")
       end)
 
-      server.on_notification("run_complete", function()
-        run_complete.set(true)
-      end)
-
-      local params = {}
+      local params = { run_id = run_id }
       if #test_ids > 0 then
         params.tests = test_ids
       end
-      log.debug("server: sending run with", #test_ids, "test id(s)")
+      log.debug("server: sending run", run_id, "with", #test_ids, "test id(s)")
       local response_future = server.send_request("run", params)
 
-      run_complete.wait()
+      -- The RPC response is the authoritative run terminator — broadcast
+      -- `run_complete` notifications can be silently dropped under channel
+      -- lag, but the response cannot.
+      local response = response_future.wait()
 
       local f = io.open(output_file, "w")
       if f then
@@ -318,13 +334,15 @@ local function build_server_spec(args)
         f:close()
       end
 
-      local response = response_future.wait()
       local exit_code = 0
       if response and response.result and response.result.summary then
         local summary = response.result.summary
         if summary.failed > 0 or summary.errors > 0 then
           exit_code = 1
         end
+      elseif response and response.error then
+        log.error("server: run rpc error:", response.error.message)
+        exit_code = 1
       end
 
       server.disconnect()
