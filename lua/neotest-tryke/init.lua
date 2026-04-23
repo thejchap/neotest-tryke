@@ -283,10 +283,19 @@ local function build_server_spec(args)
       local streamed_results = {}
 
       -- Server broadcasts every run's notifications on a shared channel;
-      -- drop anything that isn't tagged with our run_id so a concurrent
+      -- drop anything tagged with a *different* run_id so a concurrent
       -- client (or a watcher rediscovery) can't pollute our results.
+      -- Notifications without a run_id (pre-0.0.19 servers predate PR #54)
+      -- are accepted — this mirrors the tryke CLI's own client filter.
       local function for_this_run(msg)
-        return msg.params and msg.params.run_id == run_id
+        if not msg.params then
+          return false
+        end
+        local notif_run_id = msg.params.run_id
+        if notif_run_id == nil or notif_run_id == vim.NIL then
+          return true
+        end
+        return notif_run_id == run_id
       end
 
       server.on_notification("test_complete", function(msg)
