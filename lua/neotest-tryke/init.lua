@@ -227,6 +227,21 @@ local function build_direct_spec(args)
               log.trace("stream: test_complete", id, "status =", converted.status)
               streamed[id] = converted
             end
+          elseif ok and decoded and decoded.event == "discovery_warning" and decoded.warning then
+            -- Tryke's discoverer flags shapes that silently degrade
+            -- selective re-runs or watch-mode reloading (dynamic imports,
+            -- `if __TRYKE_TESTING__:` blocks with elif/else clauses).
+            -- Surface them so a missing test or stale watch result is
+            -- traceable from the log instead of looking like a plugin bug.
+            local w = decoded.warning
+            log.warn(
+              "discovery_warning:",
+              w.kind or "<unknown>",
+              "—",
+              w.file_path or "<unknown>",
+              ":",
+              w.message or ""
+            )
           elseif ok and decoded then
             log.trace("stream: event", decoded.event)
           end

@@ -51,6 +51,79 @@ describe("convert_result", function()
 		assert.equal("RuntimeError: boom", r.errors[1].message)
 	end)
 
+	it("appends traceback to message when emitted", function()
+		local tb = 'Traceback (most recent call last):\n  File "/abs/proj/tests/m.py", line 6, in crashes\n    return a["k"]\nKeyError: \'k\'\n'
+		local r = results.convert_result({
+			test = { name = "crashes", file_path = "tests/m.py" },
+			outcome = {
+				status = "failed",
+				detail = {
+					message = "KeyError: 'k'",
+					traceback = tb,
+					assertions = {},
+				},
+			},
+		})
+		assert.equal("failed", r.status)
+		assert.equal(1, #r.errors)
+		assert.equal("KeyError: 'k'\n\n" .. tb, r.errors[1].message)
+		assert.equal(5, r.errors[1].line)
+	end)
+
+	it("ignores empty traceback (assertion failures send '')", function()
+		local r = results.convert_result({
+			test = { name = "test_err", file_path = "tests/m.py" },
+			outcome = {
+				status = "failed",
+				detail = {
+					message = "RuntimeError: boom",
+					traceback = "",
+					assertions = {},
+				},
+			},
+		})
+		assert.equal(1, #r.errors)
+		assert.equal("RuntimeError: boom", r.errors[1].message)
+		assert.is_nil(r.errors[1].line)
+	end)
+
+	it("uses traceback alone when message is missing", function()
+		local tb = 'Traceback (most recent call last):\n  File "/abs/proj/tests/m.py", line 9, in fn\n    raise ValueError\nValueError\n'
+		local r = results.convert_result({
+			test = { name = "fn", file_path = "tests/m.py" },
+			outcome = {
+				status = "failed",
+				detail = {
+					traceback = tb,
+					assertions = {},
+				},
+			},
+		})
+		assert.equal(1, #r.errors)
+		assert.equal(tb, r.errors[1].message)
+		assert.equal(8, r.errors[1].line)
+	end)
+
+	it("does not pin a line for traceback frames in unrelated files", function()
+		-- All frames are inside tryke's own worker/runtime, none in the
+		-- user test file — line should remain unset so neotest renders
+		-- the diagnostic at the position's default range.
+		local tb = 'Traceback (most recent call last):\n  File "/abs/tryke/python/tryke/worker.py", line 42, in _run_test\n    raise RuntimeError\nRuntimeError\n'
+		local r = results.convert_result({
+			test = { name = "fn", file_path = "tests/m.py" },
+			outcome = {
+				status = "failed",
+				detail = {
+					message = "RuntimeError",
+					traceback = tb,
+					assertions = {},
+				},
+			},
+		})
+		assert.equal(1, #r.errors)
+		assert.is_nil(r.errors[1].line)
+	end)
+
 	it("uses display_name when present", function()
 		local r = results.convert_result({
 			test = { name = "test_add", display_name = "basic addition" },
