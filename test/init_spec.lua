@@ -19,7 +19,7 @@ describe("collect_test_ids", function()
       },
     })
     local ids = adapter._collect_test_ids(tree, tree:data())
-    assert.are.same({ "/proj/tests/math.py::test_add" }, ids)
+    assert.same({ "/proj/tests/math.py::test_add" }, ids)
   end)
 
   it("collects every test under a file in tree-iter order", function()
@@ -51,7 +51,7 @@ describe("collect_test_ids", function()
       },
     })
     local ids = adapter._collect_test_ids(tree, tree:data())
-    assert.are.same({
+    assert.same({
       "/proj/tests/math.py::test_add",
       "/proj/tests/math.py::test_sub",
     }, ids)
@@ -97,7 +97,7 @@ describe("collect_test_ids", function()
       },
     })
     local ids = adapter._collect_test_ids(tree, tree:data())
-    assert.are.same({
+    assert.same({
       "/proj/tests/math.py::Math::test_add",
       "/proj/tests/math.py::test_top",
     }, ids)
@@ -152,7 +152,7 @@ describe("collect_test_ids", function()
       },
     })
     local ids = adapter._collect_test_ids(tree, tree:data())
-    assert.are.same({
+    assert.same({
       "/abs/proj/tests/cases.py::Math::addition::square[zero]",
       "/abs/proj/tests/cases.py::Math::addition::square[one]",
     }, ids)
@@ -191,6 +191,6 @@ describe("collect_test_ids", function()
     })
     local test_node = tree:children()[1]
     local ids = adapter._collect_test_ids(test_node, test_node:data())
-    assert.are.same({ "/proj/tests/math.py::test_add" }, ids)
+    assert.same({ "/proj/tests/math.py::test_add" }, ids)
   end)
 end)
