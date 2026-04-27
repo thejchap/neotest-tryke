@@ -64,7 +64,9 @@ jobs:
           set -euo pipefail
           plug_dir="$HOME/.local/share/nvim/site/pack/test/start/nvim-treesitter"
           mkdir -p "$(dirname "$plug_dir")"
-          git clone --depth=1 https://github.com/nvim-treesitter/nvim-treesitter "$plug_dir"
+          # Pin to the legacy `master` branch — the default `main` is the
+          # in-progress v1.0 rewrite without :TSInstallSync.
+          git clone --depth=1 --branch master https://github.com/nvim-treesitter/nvim-treesitter "$plug_dir"
           nvim --headless -c "TSInstallSync python" -c "qa!"
           test -f "$plug_dir/parser/python.so"
       - run: make test
