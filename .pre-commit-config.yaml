@@ -23,3 +23,6 @@ repos:
         language: system
         pass_filenames: false
         types: [lua]
+        # `make check` only walks lua/ — skip the hook when a commit
+        # only touches test/**.lua so it's a no-op there.
+        files: ^lua/
