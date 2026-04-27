@@ -10,6 +10,28 @@ local status_map = {
   todo = "skipped",
 }
 
+--- Pull the line number of the last user-frame in a Python traceback that
+--- targets the same source file as the failing test. Tracebacks lead with
+--- worker.py frames and end with the user's call site, so iterating to the
+--- last match gives the line where the exception actually fired. Match by
+--- suffix because traceback frames carry absolute paths but `file_path` is
+--- root-relative.
+---@param traceback string
+---@param file_path string
+---@return number|nil
+local function user_frame_line(traceback, file_path)
+  if type(traceback) ~= "string" or type(file_path) ~= "string" or file_path == "" then
+    return nil
+  end
+  local last
+  for path, lnum in traceback:gmatch('File "([^"]+)", line (%d+)') do
+    if path == file_path or path:sub(-#file_path - 1) == "/" .. file_path then
+      last = tonumber(lnum)
+    end
+  end
+  return last
+end
+
 function M.build_id(root, test)
   local joinpath = vim.fs and vim.fs.joinpath or function(a, b)
     return a .. "/" .. b
@@ -52,8 +74,33 @@ function M.convert_result(tryke_result)
           line = assertion.line - 1,
         })
       end
-    elseif detail and detail.message and detail.message ~= "" then
-      table.insert(errors, { message = detail.message })
+    elseif detail then
+      -- Exception-style failures: lead with the concise `message` (e.g.
+      -- "KeyError: 'x'") so the inline diagnostic stays readable, then
+      -- append the full Python traceback when emitted so hover/expand
+      -- shows where the exception actually fired. Pull the line number
+      -- from the last user-frame in the traceback so the diagnostic
+      -- pins to the failing line, not the test definition.
+      local message
+      if type(detail.message) == "string" and detail.message ~= "" then
+        message = detail.message
+        if type(detail.traceback) == "string" and detail.traceback ~= "" then
+          message = message .. "\n\n" .. detail.traceback
+        end
+      elseif type(detail.traceback) == "string" and detail.traceback ~= "" then
+        message = detail.traceback
+      end
+      if message then
+        local err = { message = message }
+        local file_path = tryke_result.test and tryke_result.test.file_path
+        if type(detail.traceback) == "string" and detail.traceback ~= "" and type(file_path) == "string" then
+          local lnum = user_frame_line(detail.traceback, file_path)
+          if lnum then
+            err.line = lnum - 1
+          end
+        end
+        table.insert(errors, err)
+      end
     end
 
     if #errors > 0 then
