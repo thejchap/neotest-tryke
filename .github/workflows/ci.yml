@@ -48,7 +48,11 @@ jobs:
       - uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
-          version: stable
+          # Pin to a released nvim version. `stable` resolves to the latest
+          # tagged release including pre-releases — at the time of writing
+          # that's a 0.12.x nightly whose treesitter Lua API is incompatible
+          # with nvim-treesitter master and our spec helpers.
+          version: v0.11.3
       - name: Prepare neotest fixtures
         run: |
           set -euo pipefail
