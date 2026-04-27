@@ -26,7 +26,7 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           ln -sf "$install_dir/bin/lua-language-server" "$HOME/.local/bin/lua-language-server"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: JohnnyMorganz/stylua-action@v4
+      - uses: JohnnyMorganz/stylua-action@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: v2.4.0
