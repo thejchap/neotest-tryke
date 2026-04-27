@@ -256,23 +256,31 @@ local function generate_run_id()
   return string.format("neotest-%d-%x", vim.fn.getpid(), vim.uv.hrtime())
 end
 
+--- Walk the tree under `position` and collect canonical test ids. The
+--- ids are built during discovery (cli_discovery.lua, treesitter.lua's
+--- M.position_id) as `{absolute_path}::{groups...}::{name[case_label]?}`
+--- — exactly the form the tryke server's `TestItem::id()` produces, so
+--- they pass the server-side `ids.contains(t.id())` filter.
+local function collect_test_ids(tree, position)
+  local ids = {}
+  if position.type == "test" then
+    table.insert(ids, position.id)
+  else
+    for _, pos in tree:iter() do
+      if pos.type == "test" then
+        table.insert(ids, pos.id)
+      end
+    end
+  end
+  return ids
+end
+
 local function build_server_spec(args)
   local tree = args.tree
   local position = tree:data()
   local root = adapter.root(position.path)
 
-  local test_ids = {}
-  if position.type == "test" then
-    local relative = position.path:sub(#root + 2)
-    table.insert(test_ids, relative .. "::" .. (position._func_name or position.name))
-  else
-    for _, pos in tree:iter() do
-      if pos.type == "test" then
-        local relative = pos.path:sub(#root + 2)
-        table.insert(test_ids, relative .. "::" .. (pos._func_name or pos.name))
-      end
-    end
-  end
+  local test_ids = collect_test_ids(tree, position)
   log.debug("build_server_spec: sending", #test_ids, "test id(s) to server")
   for _, tid in ipairs(test_ids) do
     log.trace("build_server_spec: test id =", tid)
@@ -492,6 +500,10 @@ function adapter.results(spec, result, tree)
 
   return parsed
 end
+
+-- Internal helpers exposed for unit tests; not part of the neotest adapter
+-- contract. Prefixed with `_` to keep them out of the public surface.
+adapter._collect_test_ids = collect_test_ids
 
 setmetatable(adapter, {
   __call = function(_, opts)
