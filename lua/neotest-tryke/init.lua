@@ -113,16 +113,15 @@ function adapter.discover_positions(file_path)
   log.debug("discover_positions:", file_path, "mode =", cfg.discovery)
   if cfg.discovery == "cli" then
     local root = adapter.root(file_path)
-    local ok, result = pcall(
-      require("neotest-tryke.cli_discovery").discover,
-      file_path,
-      root,
-      cfg.tryke_command
-    )
+    local ok, result =
+      pcall(require("neotest-tryke.cli_discovery").discover, file_path, root, cfg.tryke_command)
     if ok then
       return result
     end
-    log.warn("discover_positions: cli discovery failed, falling back to treesitter:", tostring(result))
+    log.warn(
+      "discover_positions: cli discovery failed, falling back to treesitter:",
+      tostring(result)
+    )
   end
   return lib.treesitter.parse_positions(file_path, ts.query, {
     build_position = 'require("neotest-tryke.treesitter").build_position',
@@ -332,7 +331,12 @@ local function build_server_spec(args)
           local test = tryke_result.test
           if test.file_path then
             local id = results_mod.build_id(root, test)
-            log.trace("server: test_complete id =", id, "status =", tryke_result.outcome and tryke_result.outcome.status)
+            log.trace(
+              "server: test_complete id =",
+              id,
+              "status =",
+              tryke_result.outcome and tryke_result.outcome.status
+            )
             streamed_results[id] = results_mod.convert_result(tryke_result)
           end
         end
@@ -509,7 +513,15 @@ setmetatable(adapter, {
   __call = function(_, opts)
     cfg = config.get(opts)
     log.set_level(cfg.log_level)
-    log.info("setup:", "discovery =", cfg.discovery, "mode =", cfg.mode, "log_level =", cfg.log_level)
+    log.info(
+      "setup:",
+      "discovery =",
+      cfg.discovery,
+      "mode =",
+      cfg.mode,
+      "log_level =",
+      cfg.log_level
+    )
     return adapter
   end,
 })

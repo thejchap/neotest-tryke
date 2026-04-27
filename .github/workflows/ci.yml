@@ -1,0 +1,68 @@
+name: ci
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+jobs:
+  prek:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      # No first-party luals-action exists; download the official tarball
+      # release directly so the binary is on $PATH for the prek `make check`
+      # local hook.
+      - name: Install lua-language-server
+        run: |
+          set -euo pipefail
+          version=3.18.2
+          tarball="lua-language-server-${version}-linux-x64.tar.gz"
+          url="https://github.com/LuaLS/lua-language-server/releases/download/${version}/${tarball}"
+          install_dir="$HOME/.local/share/lua-language-server"
+          mkdir -p "$install_dir"
+          curl -fsSL "$url" -o "/tmp/${tarball}"
+          tar -xzf "/tmp/${tarball}" -C "$install_dir"
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$install_dir/bin/lua-language-server" "$HOME/.local/bin/lua-language-server"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: v2.4.0
+          args: --version
+      - name: Run prek
+        run: |
+          export LUA_LS=$(which lua-language-server)
+          uvx prek run -a
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: leafo/gh-actions-lua@v11
+        with:
+          luaVersion: "5.1"
+      - uses: leafo/gh-actions-luarocks@v6
+      - run: luarocks install busted
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Prepare neotest fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/share/nvim/lazy"
+          git clone --depth=1 https://github.com/nvim-neotest/nvim-nio "$HOME/.local/share/nvim/lazy/nvim-nio"
+          git clone --depth=1 https://github.com/nvim-neotest/neotest "$HOME/.local/share/nvim/lazy/neotest"
+      - run: make test
+
+  ci:
+    if: always()
+    needs: [prek, test]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            exit 1
+          fi

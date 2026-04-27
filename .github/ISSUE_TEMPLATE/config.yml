@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Tryke core
+    url: https://github.com/thejchap/tryke/issues
+    about: Bugs in tryke itself (CLI, runner, discovery, server) belong in that repo.
+  - name: VS Code extension
+    url: https://github.com/thejchap/tryke-vscode/issues
+    about: Bugs or requests for the VS Code extension belong in that repo.
+  - name: Discussion / question
+    url: https://github.com/thejchap/tryke/discussions
+    about: Open-ended questions, ideas, and design chat live on the tryke repo.

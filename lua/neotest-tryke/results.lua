@@ -55,7 +55,9 @@ function M.convert_result(tryke_result)
   local outcome = tryke_result.outcome
   local neotest_status = status_map[outcome.status] or "failed"
 
-  local display = type(tryke_result.test.display_name) == "string" and tryke_result.test.display_name or tryke_result.test.name
+  local display = type(tryke_result.test.display_name) == "string"
+      and tryke_result.test.display_name
+    or tryke_result.test.name
   local short = display .. ": " .. neotest_status
 
   local result = {
@@ -70,7 +72,11 @@ function M.convert_result(tryke_result)
     if detail and detail.assertions and #detail.assertions > 0 then
       for _, assertion in ipairs(detail.assertions) do
         table.insert(errors, {
-          message = assertion.expression .. ": expected " .. assertion.expected .. ", received " .. assertion.received,
+          message = assertion.expression
+            .. ": expected "
+            .. assertion.expected
+            .. ", received "
+            .. assertion.received,
           line = assertion.line - 1,
         })
       end
@@ -93,7 +99,11 @@ function M.convert_result(tryke_result)
       if message then
         local err = { message = message }
         local file_path = tryke_result.test and tryke_result.test.file_path
-        if type(detail.traceback) == "string" and detail.traceback ~= "" and type(file_path) == "string" then
+        if
+          type(detail.traceback) == "string"
+          and detail.traceback ~= ""
+          and type(file_path) == "string"
+        then
           local lnum = user_frame_line(detail.traceback, file_path)
           if lnum then
             err.line = lnum - 1
