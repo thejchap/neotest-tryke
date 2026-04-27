@@ -1,0 +1,97 @@
+name: ci
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+jobs:
+  prek:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      # No first-party luals-action exists; download the official tarball
+      # release directly so the binary is on $PATH for the prek `make check`
+      # local hook.
+      - name: Install lua-language-server
+        run: |
+          set -euo pipefail
+          version=3.18.2
+          tarball="lua-language-server-${version}-linux-x64.tar.gz"
+          url="https://github.com/LuaLS/lua-language-server/releases/download/${version}/${tarball}"
+          install_dir="$HOME/.local/share/lua-language-server"
+          mkdir -p "$install_dir"
+          curl -fsSL "$url" -o "/tmp/${tarball}"
+          tar -xzf "/tmp/${tarball}" -C "$install_dir"
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$install_dir/bin/lua-language-server" "$HOME/.local/bin/lua-language-server"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: v2.4.0
+          args: --version
+      - name: Run prek
+        run: |
+          export LUA_LS=$(which lua-language-server)
+          uvx prek run -a
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: leafo/gh-actions-lua@v11
+        with:
+          luaVersion: "5.1"
+      - uses: leafo/gh-actions-luarocks@v6
+      - run: luarocks install busted
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          # Pin to a released nvim version. `stable` resolves to the latest
+          # tagged release including pre-releases — at the time of writing
+          # that's a 0.12.x nightly whose treesitter Lua API is incompatible
+          # with nvim-treesitter master and our spec helpers.
+          version: v0.11.3
+      # Pin all three plugin checkouts to specific commits so CI is
+      # reproducible and won't break when upstream lands a behavioural
+      # change. Bump intentionally when a fix needs the new version.
+      - name: Prepare neotest fixtures
+        env:
+          NEOTEST_SHA: fd0b7986dd0ae04e38ec7dc0c78a432e3820839c
+          NIO_SHA: 21f5324bfac14e22ba26553caf69ec76ae8a7662
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/share/nvim/lazy"
+          git clone https://github.com/nvim-neotest/nvim-nio "$HOME/.local/share/nvim/lazy/nvim-nio"
+          git -C "$HOME/.local/share/nvim/lazy/nvim-nio" checkout "$NIO_SHA"
+          git clone https://github.com/nvim-neotest/neotest "$HOME/.local/share/nvim/lazy/neotest"
+          git -C "$HOME/.local/share/nvim/lazy/neotest" checkout "$NEOTEST_SHA"
+      # Install nvim-treesitter into nvim's default packpath so its python
+      # parser is on `runtimepath` for the headless test runs without the
+      # shim having to opt in. `pack/*/start/*` is auto-loaded even with
+      # `--noplugin -u NONE` in test/bin/lua. Pin to legacy `master`
+      # branch tip — `main` is the in-progress v1.0 rewrite without
+      # :TSInstallSync.
+      - name: Install nvim-treesitter and python parser
+        env:
+          TS_SHA: cf12346a3414fa1b06af75c79faebe7f76df080a
+        run: |
+          set -euo pipefail
+          plug_dir="$HOME/.local/share/nvim/site/pack/test/start/nvim-treesitter"
+          mkdir -p "$(dirname "$plug_dir")"
+          git clone https://github.com/nvim-treesitter/nvim-treesitter "$plug_dir"
+          git -C "$plug_dir" checkout "$TS_SHA"
+          nvim --headless -c "TSInstallSync python" -c "qa!"
+          test -f "$plug_dir/parser/python.so"
+      - run: make test
+
+  ci:
+    if: always()
+    needs: [prek, test]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            exit 1
+          fi

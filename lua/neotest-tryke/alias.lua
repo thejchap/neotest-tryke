@@ -73,7 +73,9 @@ local function parse(source)
         module_aliases[alias] = true
       elseif stripped == "import tryke" or stripped:match("^import%s+tryke%s*#") then
         module_aliases["tryke"] = true
-      elseif stripped:match("^import%s+tryke%s*,") or stripped:match("^import%s+.-,%s*tryke%s*,?") then
+      elseif
+        stripped:match("^import%s+tryke%s*,") or stripped:match("^import%s+.-,%s*tryke%s*,?")
+      then
         module_aliases["tryke"] = true
       end
     end

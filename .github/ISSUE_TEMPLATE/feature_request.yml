@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a new feature or an improvement to an existing one.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests that include a concrete proposal (not just a problem)
+        are easier to move forward. Describing prior art from other neotest
+        adapters or pytest-equivalent plugins is very welcome.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, and why does it matter? Concrete scenarios help.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: API sketch, config key, command — whatever form fits.
+      render: lua
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other designs you thought about and why you discarded them.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which component does this touch? Pick the closest; maintainers will re-label if needed.
+      options:
+        - discovery
+        - cli-discovery
+        - treesitter
+        - results
+        - server
+        - config
+        - alias
+        - logger
+        - unsure
+    validations:
+      required: true

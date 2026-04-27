@@ -1,0 +1,121 @@
+# Label taxonomy for thejchap/neotest-tryke.
+#
+# Synced to GitHub by .github/workflows/labels.yml on pushes to master that
+# modify this file. The sync runs with `skip-delete: true`, so removing a
+# label here does NOT delete it on GitHub — delete manually if intended.
+#
+# Conventions:
+#   - Type labels:      one per issue (bug, enhancement, documentation, ...)
+#   - Area labels:      one or more (area: discovery, area: server, ...)
+#   - Platform labels:  only when the issue is platform-specific
+#   - Workflow labels:  status / triage signals for contributors
+
+# --- Type -------------------------------------------------------------------
+
+- name: bug
+  color: d73a4a
+  description: Something isn't working
+
+- name: enhancement
+  color: a2eeef
+  description: New feature or request
+
+- name: breaking
+  color: b60205
+  description: A breaking API or CLI change
+
+- name: performance
+  color: fbca04
+  description: Performance regression or opportunity
+
+- name: internal
+  color: cfd3d7
+  description: Refactor or cleanup with no user-visible behavior change
+
+- name: documentation
+  color: 0075ca
+  description: Improvements or additions to documentation
+
+- name: question
+  color: d876e3
+  description: Further information is requested
+
+# --- Area -------------------------------------------------------------------
+
+- name: "area: discovery"
+  color: 006b75
+  description: Test discovery (general — both CLI and treesitter modes)
+
+- name: "area: cli-discovery"
+  color: 006b75
+  description: cli_discovery.lua — CLI-mode delegation to tryke
+
+- name: "area: treesitter"
+  color: 006b75
+  description: treesitter.lua — in-process Python parsing
+
+- name: "area: results"
+  color: 006b75
+  description: results.lua — result parsing and mapping
+
+- name: "area: server"
+  color: 006b75
+  description: server.lua — long-running tryke server client
+
+- name: "area: config"
+  color: 006b75
+  description: config.lua — config merging
+
+- name: "area: alias"
+  color: 006b75
+  description: alias.lua — test aliasing
+
+- name: "area: logger"
+  color: 006b75
+  description: logger.lua
+
+# --- Platform ---------------------------------------------------------------
+
+- name: "platform: linux"
+  color: fef2c0
+  description: Linux-specific
+
+- name: "platform: macos"
+  color: fef2c0
+  description: macOS-specific
+
+- name: "platform: windows"
+  color: fef2c0
+  description: Windows-specific
+
+# --- Workflow / community ---------------------------------------------------
+
+- name: good first issue
+  color: 7057ff
+  description: Good for newcomers
+
+- name: help wanted
+  color: 008672
+  description: Contributions especially welcome
+
+- name: needs-design
+  color: bfd4f2
+  description: Requires design discussion before implementation
+
+- name: needs-repro
+  color: e4e669
+  description: Waiting on a minimal reproducer from the reporter
+
+# --- Dependabot / automation ------------------------------------------------
+
+- name: dependencies
+  color: 0366d6
+  description: Pull requests that update a dependency file
+
+- name: github_actions
+  color: "000000"
+  description: Pull requests that update GitHub Actions code
+
+- name: lua
+  color: 000080
+  description: Pull requests that update Lua code

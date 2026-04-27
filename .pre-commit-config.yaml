@@ -1,0 +1,28 @@
+fail_fast: false
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: end-of-file-fixer
+  - repo: https://github.com/JohnnyMorganz/StyLua
+    rev: v2.4.0
+    hooks:
+      - id: stylua
+        # Scope formatting to the plugin source. Tests are checked separately
+        # by `make test`; the existing `test/**` files have not been
+        # stylua-normalized yet and reformatting them is out of scope for the
+        # CI-setup PR.
+        files: ^lua/
+  - repo: local
+    hooks:
+      - id: lua-ls
+        name: lua-language-server check
+        entry: make check
+        language: system
+        pass_filenames: false
+        types: [lua]
+        # `make check` only walks lua/ — skip the hook when a commit
+        # only touches test/**.lua so it's a no-op there.
+        files: ^lua/

@@ -1,0 +1,86 @@
+name: Bug report
+description: Something in neotest-tryke is broken or misbehaving.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. A small, runnable reproducer
+        is the single most useful thing you can include.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing what's wrong.
+      placeholder: ":Neotest run on a parametrized test reports all cases as skipped."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: |
+        Smallest Lua config / Python test file / commands that reproduce the
+        bug. Paste code directly — no need for a link.
+      render: lua
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: |
+        Include relevant Neovim output and the contents of
+        `~/.local/state/nvim/log/neotest-tryke.log` if available.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: neotest-tryke-version
+    attributes:
+      label: neotest-tryke version
+      description: Commit SHA of the installed plugin (e.g. from your plugin manager lockfile).
+      placeholder: "85b991b"
+    validations:
+      required: true
+
+  - type: input
+    id: tryke-version
+    attributes:
+      label: tryke version
+      description: Output of `tryke --version`.
+      placeholder: "0.0.24"
+    validations:
+      required: true
+
+  - type: input
+    id: nvim-version
+    attributes:
+      label: Neovim version
+      description: Output of `nvim --version | head -1`.
+      placeholder: "NVIM v0.11.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (describe in reproducer)
+    validations:
+      required: true
