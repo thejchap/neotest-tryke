@@ -9,6 +9,11 @@ local notification_handlers = {}
 local request_id = 0
 local server_process = nil
 local read_buffer = ""
+-- Captured at the most recent `ensure_server` call so the VimLeavePre
+-- autocmd can honour `server.auto_stop` (the config object isn't in
+-- scope from the autocmd otherwise, and the docs promise the flag is
+-- respected — without this, `auto_stop = false` was a silent no-op).
+local last_config = nil
 
 function M.is_connected()
   return handle ~= nil and not handle:is_closing()
@@ -116,6 +121,7 @@ function M.on_notification(method, handler)
 end
 
 function M.ensure_server(config)
+  last_config = config
   local host = config.server.host
   local port = config.server.port
   local endpoint = host .. ":" .. tostring(port)
@@ -202,7 +208,17 @@ end
 vim.api.nvim_create_autocmd("VimLeavePre", {
   group = vim.api.nvim_create_augroup("neotest_tryke_cleanup", { clear = true }),
   callback = function()
-    M.stop_server()
+    -- Default to true when ensure_server was never called (the autocmd
+    -- still fires) so we keep the documented default behaviour.
+    local auto_stop = true
+    if last_config and last_config.server and last_config.server.auto_stop ~= nil then
+      auto_stop = last_config.server.auto_stop
+    end
+    if auto_stop then
+      M.stop_server()
+    else
+      M.disconnect()
+    end
   end,
 })
 

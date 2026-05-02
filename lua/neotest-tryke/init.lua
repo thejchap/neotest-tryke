@@ -259,25 +259,32 @@ end
 --- Discovery records ids as `{absolute_path}::{groups...}::{name[case_label]?}`
 --- so they round-trip through neotest, but the tryke server's
 --- `ids.contains(t.id())` filter compares against `TestItem::id()` which
---- uses the *relative* path. Strip the project root from the leading
---- path component before sending so the server actually matches the
---- tests we asked it to run (otherwise it picks up zero and every test
---- silently degrades to "skipped: not run").
-local function to_server_id(id, root)
-  if root and id:sub(1, #root + 1) == root .. "/" then
-    return id:sub(#root + 2)
+--- is `{relative_path}::{name[case_label]?}` — *no* group segments. So
+--- for namespaced tests (the `with t.describe(...)` pattern) we have
+--- to drop both the absolute-path prefix and every intermediate group;
+--- otherwise the server picks up zero tests and every tree test
+--- silently degrades to "skipped: not run".
+---
+--- The leaf is `_func_name` when discovery synthesised a display name
+--- (`@test("custom name")` and doctests both set this), otherwise
+--- `name` — which already carries the `[case_label]` suffix for
+--- parametrised cases.
+local function to_server_id(pos, root)
+  local relative = pos.path
+  if root and relative:sub(1, #root + 1) == root .. "/" then
+    relative = relative:sub(#root + 2)
   end
-  return id
+  return relative .. "::" .. (pos._func_name or pos.name)
 end
 
 local function collect_test_ids(tree, position, root)
   local ids = {}
   if position.type == "test" then
-    table.insert(ids, to_server_id(position.id, root))
+    table.insert(ids, to_server_id(position, root))
   else
     for _, pos in tree:iter() do
       if pos.type == "test" then
-        table.insert(ids, to_server_id(pos.id, root))
+        table.insert(ids, to_server_id(pos, root))
       end
     end
   end
