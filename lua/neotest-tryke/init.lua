@@ -255,19 +255,29 @@ local function generate_run_id()
   return string.format("neotest-%d-%x", vim.fn.getpid(), vim.uv.hrtime())
 end
 
---- Walk the tree under `position` and collect canonical test ids. The
---- ids are built during discovery (cli_discovery.lua, treesitter.lua's
---- M.position_id) as `{absolute_path}::{groups...}::{name[case_label]?}`
---- — exactly the form the tryke server's `TestItem::id()` produces, so
---- they pass the server-side `ids.contains(t.id())` filter.
-local function collect_test_ids(tree, position)
+--- Walk the tree under `position` and collect server-shaped test ids.
+--- Discovery records ids as `{absolute_path}::{groups...}::{name[case_label]?}`
+--- so they round-trip through neotest, but the tryke server's
+--- `ids.contains(t.id())` filter compares against `TestItem::id()` which
+--- uses the *relative* path. Strip the project root from the leading
+--- path component before sending so the server actually matches the
+--- tests we asked it to run (otherwise it picks up zero and every test
+--- silently degrades to "skipped: not run").
+local function to_server_id(id, root)
+  if root and id:sub(1, #root + 1) == root .. "/" then
+    return id:sub(#root + 2)
+  end
+  return id
+end
+
+local function collect_test_ids(tree, position, root)
   local ids = {}
   if position.type == "test" then
-    table.insert(ids, position.id)
+    table.insert(ids, to_server_id(position.id, root))
   else
     for _, pos in tree:iter() do
       if pos.type == "test" then
-        table.insert(ids, pos.id)
+        table.insert(ids, to_server_id(pos.id, root))
       end
     end
   end
@@ -279,7 +289,7 @@ local function build_server_spec(args)
   local position = tree:data()
   local root = adapter.root(position.path)
 
-  local test_ids = collect_test_ids(tree, position)
+  local test_ids = collect_test_ids(tree, position, root)
   log.debug("build_server_spec: sending", #test_ids, "test id(s) to server")
   for _, tid in ipairs(test_ids) do
     log.trace("build_server_spec: test id =", tid)

@@ -18,8 +18,8 @@ describe("collect_test_ids", function()
         range = { 0, 0, 0, 0 },
       },
     })
-    local ids = adapter._collect_test_ids(tree, tree:data())
-    assert.same({ "/proj/tests/math.py::test_add" }, ids)
+    local ids = adapter._collect_test_ids(tree, tree:data(), "/proj")
+    assert.same({ "tests/math.py::test_add" }, ids)
   end)
 
   it("collects every test under a file in tree-iter order", function()
@@ -50,10 +50,10 @@ describe("collect_test_ids", function()
         },
       },
     })
-    local ids = adapter._collect_test_ids(tree, tree:data())
+    local ids = adapter._collect_test_ids(tree, tree:data(), "/proj")
     assert.same({
-      "/proj/tests/math.py::test_add",
-      "/proj/tests/math.py::test_sub",
+      "tests/math.py::test_add",
+      "tests/math.py::test_sub",
     }, ids)
   end)
 
@@ -96,16 +96,16 @@ describe("collect_test_ids", function()
         },
       },
     })
-    local ids = adapter._collect_test_ids(tree, tree:data())
+    local ids = adapter._collect_test_ids(tree, tree:data(), "/proj")
     assert.same({
-      "/proj/tests/math.py::Math::test_add",
-      "/proj/tests/math.py::test_top",
+      "tests/math.py::Math::test_add",
+      "tests/math.py::test_top",
     }, ids)
   end)
 
-  it("preserves absolute paths, group separators, and [case_label] suffixes", function()
-    -- The canonical id format the tryke server expects:
-    -- {absolute_path}::{groups...}::{name[case_label]?}.
+  it("preserves group separators and [case_label] suffixes after stripping root", function()
+    -- The server expects {relative_path}::{groups...}::{name[case_label]?}
+    -- — only the leading absolute path is rewritten relative to root.
     local tree = build_tree({
       {
         type = "file",
@@ -151,10 +151,10 @@ describe("collect_test_ids", function()
         },
       },
     })
-    local ids = adapter._collect_test_ids(tree, tree:data())
+    local ids = adapter._collect_test_ids(tree, tree:data(), "/abs/proj")
     assert.same({
-      "/abs/proj/tests/cases.py::Math::addition::square[zero]",
-      "/abs/proj/tests/cases.py::Math::addition::square[one]",
+      "tests/cases.py::Math::addition::square[zero]",
+      "tests/cases.py::Math::addition::square[one]",
     }, ids)
   end)
 
@@ -190,7 +190,21 @@ describe("collect_test_ids", function()
       },
     })
     local test_node = tree:children()[1]
-    local ids = adapter._collect_test_ids(test_node, test_node:data())
+    local ids = adapter._collect_test_ids(test_node, test_node:data(), "/proj")
+    assert.same({ "tests/math.py::test_add" }, ids)
+  end)
+
+  it("leaves ids untouched when no root is supplied (defensive — should not happen in practice)", function()
+    local tree = build_tree({
+      {
+        type = "test",
+        path = "/proj/tests/math.py",
+        name = "test_add",
+        id = "/proj/tests/math.py::test_add",
+        range = { 0, 0, 0, 0 },
+      },
+    })
+    local ids = adapter._collect_test_ids(tree, tree:data(), nil)
     assert.same({ "/proj/tests/math.py::test_add" }, ids)
   end)
 end)
