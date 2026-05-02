@@ -350,6 +350,19 @@ local function build_server_spec(args)
         log.debug("server: run_start — server picked up", #tests, "test(s)")
       end)
 
+      -- The server flushes the RPC response BEFORE its `test_complete`
+      -- and `run_complete` notifications, so `response_future.wait()` is
+      -- not enough to guarantee the per-test outcomes have been
+      -- received. Wait on `run_complete` separately — it's emitted last
+      -- — and only then write the output file.
+      local run_complete_event = nio.control.event()
+      server.on_notification("run_complete", function(msg)
+        if not for_this_run(msg) then
+          return
+        end
+        run_complete_event.set()
+      end)
+
       local params = { run_id = run_id }
       if #test_ids > 0 then
         params.tests = test_ids
@@ -357,10 +370,22 @@ local function build_server_spec(args)
       log.debug("server: sending run", run_id, "with", #test_ids, "test id(s)")
       local response_future = server.send_request("run", params)
 
-      -- The RPC response is the authoritative run terminator — broadcast
-      -- `run_complete` notifications can be silently dropped under channel
-      -- lag, but the response cannot.
       local response = response_future.wait()
+
+      -- Bounded wait so a server that crashes before emitting
+      -- `run_complete` can't hang the run forever; the response is
+      -- already in hand, so the worst case is a missing per-test
+      -- outcome that gets reported as "skipped: not run" downstream.
+      if not run_complete_event.is_set() then
+        nio.first({
+          function()
+            run_complete_event.wait()
+          end,
+          function()
+            nio.sleep(2000)
+          end,
+        })
+      end
 
       local f = io.open(output_file, "w")
       if f then
