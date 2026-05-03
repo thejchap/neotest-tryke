@@ -264,3 +264,83 @@ describe("collect_test_ids", function()
     assert.same({ "/proj/tests/math.py::test_add" }, ids)
   end)
 end)
+
+describe("build_direct_argv", function()
+  -- Direct-mode argv is the runner's primary contract: it controls the
+  -- argv passed to `tryke test` and any env (TRYKE_LOG) the child sees.
+  -- Argument ordering and `env` shape regress easily, so each option
+  -- gets a dedicated assertion. Tested at the pure-helper level
+  -- (`_build_direct_argv`) so the streaming-results scaffolding in
+  -- `build_direct_spec` doesn't drag in `neotest.lib.file`.
+
+  local function file_tree()
+    return require("neotest.types").Tree.from_list({
+      type = "file",
+      path = "/proj/tests/math.py",
+      name = "math.py",
+      id = "/proj/tests/math.py",
+      range = { 0, 0, 10, 0 },
+    }, function(pos)
+      return pos.id
+    end)
+  end
+
+  local function default_cfg(overrides)
+    -- Mirror the shape `config.get` produces — `_build_direct_argv` reads
+    -- many fields and missing-key access would be an unrelated error.
+    local base = {
+      tryke_command = "tryke",
+      python = nil,
+      tryke_log_level = nil,
+      args = {},
+      workers = nil,
+      fail_fast = false,
+    }
+    for k, v in pairs(overrides or {}) do
+      base[k] = v
+    end
+    return base
+  end
+
+  it("threads `--python <path>` into the argv", function()
+    local argv = adapter._build_direct_argv(
+      { tree = file_tree() },
+      default_cfg({ python = "/proj/.venv/bin/python3" }),
+      "/proj"
+    )
+    -- Pin the exact pair so a regression in argv ordering (e.g.
+    -- `--python` ending up before `test`) surfaces immediately.
+    local found_at = nil
+    for i, arg in ipairs(argv) do
+      if arg == "--python" then
+        found_at = i
+      end
+    end
+    assert.is_truthy(found_at, "expected --python in argv: " .. table.concat(argv, " "))
+    assert.equal("/proj/.venv/bin/python3", argv[found_at + 1])
+  end)
+
+  it("returns env with TRYKE_LOG when tryke_log_level is configured", function()
+    local _, env = adapter._build_direct_argv(
+      { tree = file_tree() },
+      default_cfg({ tryke_log_level = "info" }),
+      "/proj"
+    )
+    assert.same({ TRYKE_LOG = "info" }, env)
+  end)
+
+  it("returns nil env when tryke_log_level is unset", function()
+    -- A nil env means neotest forwards the parent's full environment.
+    -- Setting `{}` here would (depending on the runner's spawn helper)
+    -- give the child no env at all, which would break PATH lookup.
+    local _, env = adapter._build_direct_argv({ tree = file_tree() }, default_cfg(), "/proj")
+    assert.is_nil(env)
+  end)
+
+  it("omits --python from argv when no python is configured", function()
+    local argv = adapter._build_direct_argv({ tree = file_tree() }, default_cfg(), "/proj")
+    for _, arg in ipairs(argv) do
+      assert.are_not.equal("--python", arg)
+    end
+  end)
+end)

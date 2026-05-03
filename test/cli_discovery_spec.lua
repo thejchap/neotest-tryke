@@ -9,18 +9,26 @@ local function collect(tree)
 end
 
 -- Replace `vim.system` for the duration of a test so we can feed the
--- parser canned stdout without actually spawning tryke. Restores the
+-- parser canned stdout without actually spawning tryke. The captured
+-- `cmd` is exposed via the second arg to `fn` so tests that care about
+-- argv shape (e.g. `--python` plumbing) can assert on it. Restores the
 -- original on teardown.
 local function with_mock_system(stdout_lines, fn)
   local original = vim.system
-  vim.system = function(_cmd, _opts)
+  local last_cmd = nil
+  vim.system = function(cmd, _opts)
+    last_cmd = cmd
     return {
       wait = function()
         return { code = 0, stdout = table.concat(stdout_lines, "\n"), stderr = "" }
       end,
     }
   end
-  local ok, err = pcall(fn)
+  local ok, err = pcall(function()
+    fn(function()
+      return last_cmd
+    end)
+  end)
   vim.system = original
   if not ok then
     error(err)
@@ -186,5 +194,43 @@ describe("cli_discovery", function()
     assert.equal(4, lines_by_id[tmp .. "::square[zero]"], "typed form zero → line 4")
     assert.equal(5, lines_by_id[tmp .. "::square[one]"], "typed form one → line 5")
     assert.equal(6, lines_by_id[tmp .. "::square[ten]"], "kwargs form ten → line 6")
+  end)
+
+  it("forwards the python interpreter as `--python <path>` when provided", function()
+    -- Discovery must use the same interpreter as execution; otherwise the
+    -- test tree silently fails to populate when system python lacks the
+    -- project's tryke package. The flag's relative position matters
+    -- (after `--reporter`, before any extra `args`), so the assertion
+    -- pins the full slice rather than just `contains`.
+    with_mock_system({ emit({}) }, function(get_cmd)
+      cli.discover("/proj/t.py", "/proj", "tryke", "/proj/.venv/bin/python3")
+      local cmd = get_cmd()
+      assert.same(
+        {
+          "tryke",
+          "test",
+          "t.py",
+          "--collect-only",
+          "--reporter",
+          "json",
+          "--python",
+          "/proj/.venv/bin/python3",
+        },
+        cmd
+      )
+    end)
+  end)
+
+  it("omits --python when no python is provided", function()
+    -- nil python means "let tryke pick" (PATH default); the flag must
+    -- not be inserted, otherwise tryke would fail with a missing-arg
+    -- error or pass an empty string as the interpreter path.
+    with_mock_system({ emit({}) }, function(get_cmd)
+      cli.discover("/proj/t.py", "/proj", "tryke", nil)
+      local cmd = get_cmd()
+      for _, arg in ipairs(cmd) do
+        assert.are_not.equal("--python", arg, "--python should be absent when python=nil")
+      end
+    end)
   end)
 end)
