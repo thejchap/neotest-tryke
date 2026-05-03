@@ -116,22 +116,6 @@ Run tests using neotest commands:
 - `:Neotest summary` — toggle the test summary panel
 - `:Neotest output` — show test output
 
-## parametrized tests
-
-`@test.cases` functions are expanded at discovery time: the adapter walks the decorator's arguments and registers one position per case label. Both forms are supported.
-
-```python
-@test.cases(
-    zero={"n": 0, "expected": 0},
-    one={"n": 1, "expected": 1},
-    ten={"n": 10, "expected": 100},
-)
-def square(n: int, expected: int) -> None:
-    expect(n * n).to_equal(expected)
-```
-
-The summary tree shows one row per case (`square[zero]`, `square[one]`, `square[ten]`). `:Neotest run` on an individual case dispatches `tryke test … -k 'square[zero]'`. The list form `@test.cases([("label", {...}), ...])` is likewise expanded to one row per literal label.
-
 ## development
 
 ### prerequisites
