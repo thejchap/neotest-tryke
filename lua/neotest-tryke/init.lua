@@ -212,9 +212,7 @@ local function build_direct_argv(args, current_cfg, root)
   -- Neotest forwards `env` onto the spawned process. Setting `TRYKE_LOG`
   -- here lights up both rust runtime logs and python worker logs on the
   -- child's stderr, which neotest surfaces in the run output panel.
-  local env = current_cfg.tryke_log_level
-      and { TRYKE_LOG = current_cfg.tryke_log_level }
-    or nil
+  local env = current_cfg.tryke_log_level and { TRYKE_LOG = current_cfg.tryke_log_level } or nil
 
   return command, env
 end
