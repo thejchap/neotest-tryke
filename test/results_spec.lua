@@ -35,6 +35,52 @@ describe("convert_result", function()
 		assert.equal(9, r.errors[1].line)
 	end)
 
+	it("leads assertion diagnostics with display_name when present", function()
+		-- The expression is already visible on the annotated line, so
+		-- repeating it inside the diagnostic just crowds the gutter and
+		-- often gets truncated. Leading with the test's display_name
+		-- gives the diagnostic a stable, recognisable handle that
+		-- matches the test tree entry.
+		local r = results.convert_result({
+			test = { name = "test_basic", display_name = "basic equality" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = 'expect(1, "1 equals itself").to_equal(2)',
+							expected = "2",
+							received = "1",
+							line = 6,
+						},
+					},
+				},
+			},
+		})
+		assert.equal("basic equality: expected 2, received 1", r.errors[1].message)
+		assert.equal(5, r.errors[1].line)
+	end)
+
+	it("falls back to expression when display_name is absent", function()
+		local r = results.convert_result({
+			test = { name = "test_sub" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = "assert x == y",
+							expected = "3",
+							received = "5",
+							line = 10,
+						},
+					},
+				},
+			},
+		})
+		assert.equal("assert x == y: expected 3, received 5", r.errors[1].message)
+	end)
+
 	it("maps failed with message only", function()
 		local r = results.convert_result({
 			test = { name = "test_err" },

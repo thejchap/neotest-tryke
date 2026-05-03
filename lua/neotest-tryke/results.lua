@@ -70,9 +70,20 @@ function M.convert_result(tryke_result)
     local detail = outcome.detail
 
     if detail and detail.assertions and #detail.assertions > 0 then
+      -- Lead the inline diagnostic with the test's display name when
+      -- present so users can correlate the failure with the test tree
+      -- entry. The full assertion expression is on the line being
+      -- annotated, so repeating it inside the diagnostic only crowds
+      -- the gutter. For tests without a display name (no `@test("name")`
+      -- and no docstring), fall back to the expression — there's no
+      -- more identifying label to lead with.
+      local has_display = type(tryke_result.test.display_name) == "string"
+        and tryke_result.test.display_name ~= ""
+      local lead_default = has_display and tryke_result.test.display_name or nil
       for _, assertion in ipairs(detail.assertions) do
+        local lead = lead_default or assertion.expression
         table.insert(errors, {
-          message = assertion.expression
+          message = lead
             .. ": expected "
             .. assertion.expected
             .. ", received "
