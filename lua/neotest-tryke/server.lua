@@ -19,6 +19,40 @@ function M.is_connected()
   return handle ~= nil and not handle:is_closing()
 end
 
+--- Build the `args` array and `env` table passed to `vim.uv.spawn` for the
+--- tryke server child. Pure: no side effects, easy to unit-test.
+---
+--- Returns `(args, env)`:
+---  * `args`: positional arguments for `tryke server`. Always carries
+---    `server --port <port>`; appends `--python <path>` when set.
+---  * `env`: nil when no env override is needed (libuv inherits the parent
+---    env in that case). Otherwise an array of `"KEY=VALUE"` strings —
+---    libuv resets the env when `env` is provided, so we have to splice
+---    the parent env ourselves before adding `TRYKE_LOG`.
+---
+---@param config table  the resolved adapter config table
+---@param port number   the server port to bind
+---@return string[] args
+---@return string[]|nil env
+function M._build_spawn_options(config, port)
+  local args = { "server", "--port", tostring(port) }
+  if config.python then
+    table.insert(args, "--python")
+    table.insert(args, config.python)
+  end
+
+  local env = nil
+  if config.tryke_log_level then
+    env = {}
+    for k, v in pairs(vim.uv.os_environ() or {}) do
+      table.insert(env, k .. "=" .. v)
+    end
+    table.insert(env, "TRYKE_LOG=" .. config.tryke_log_level)
+  end
+
+  return args, env
+end
+
 function M.connect(host, port)
   local endpoint = host .. ":" .. tostring(port)
   log.debug("server: connect", endpoint)
@@ -152,24 +186,7 @@ function M.ensure_server(config)
   local stderr = vim.uv.new_pipe()
 
   local cmd = config.tryke_command or "tryke"
-  local server_args = { "server", "--port", tostring(port) }
-  if config.python then
-    table.insert(server_args, "--python")
-    table.insert(server_args, config.python)
-  end
-
-  -- Forward `tryke_log_level` as `TRYKE_LOG` on the server child env,
-  -- which propagates to spawned python workers too. Inherit the rest of
-  -- the parent env (libuv defaults to a clean env when `env` is set, so
-  -- we have to splice the existing PATH/HOME/etc. ourselves).
-  local server_env = nil
-  if config.tryke_log_level then
-    server_env = {}
-    for k, v in pairs(vim.uv.os_environ() or {}) do
-      table.insert(server_env, k .. "=" .. v)
-    end
-    table.insert(server_env, "TRYKE_LOG=" .. config.tryke_log_level)
-  end
+  local server_args, server_env = M._build_spawn_options(config, port)
 
   log.info("server: spawning", cmd, table.concat(server_args, " "))
   server_process = vim.uv.spawn(cmd, {

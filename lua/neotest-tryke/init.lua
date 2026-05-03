@@ -135,12 +135,23 @@ function adapter.discover_positions(file_path)
   })
 end
 
-local function build_direct_spec(args)
+--- Build the argv and env that go to `tryke test` for a direct run.
+---
+--- Pure: no I/O, no neotest.lib touch, no nio scratch files. `root` is
+--- passed in (rather than computed via `adapter.root`) so this helper
+--- stays free of `lib.files` and is unit-testable without stubbing
+--- neotest's loader.
+---
+---@param args  table  neotest.RunArgs (we only read `tree` and `extra_args`)
+---@param current_cfg table  the resolved adapter config
+---@param root  string?  workspace root for relativising paths
+---@return string[]   argv  argv to spawn (`tryke test ...`)
+---@return table|nil  env   env table to forward to the child
+local function build_direct_argv(args, current_cfg, root)
   local tree = args.tree
   local position = tree:data()
-  local root = adapter.root(position.path)
 
-  local command = { cfg.tryke_command, "test" }
+  local command = { current_cfg.tryke_command, "test" }
 
   local function to_relative(abs_path)
     if root and abs_path:sub(1, #root) == root then
@@ -174,21 +185,21 @@ local function build_direct_spec(args)
   table.insert(command, "--reporter")
   table.insert(command, "json")
 
-  if cfg.python then
+  if current_cfg.python then
     table.insert(command, "--python")
-    table.insert(command, cfg.python)
+    table.insert(command, current_cfg.python)
   end
 
-  if cfg.workers then
+  if current_cfg.workers then
     table.insert(command, "--workers")
-    table.insert(command, tostring(cfg.workers))
+    table.insert(command, tostring(current_cfg.workers))
   end
 
-  if cfg.fail_fast then
+  if current_cfg.fail_fast then
     table.insert(command, "--fail-fast")
   end
 
-  for _, arg in ipairs(cfg.args) do
+  for _, arg in ipairs(current_cfg.args) do
     table.insert(command, arg)
   end
 
@@ -198,6 +209,20 @@ local function build_direct_spec(args)
     end
   end
 
+  -- Neotest forwards `env` onto the spawned process. Setting `TRYKE_LOG`
+  -- here lights up both rust runtime logs and python worker logs on the
+  -- child's stderr, which neotest surfaces in the run output panel.
+  local env = current_cfg.tryke_log_level
+      and { TRYKE_LOG = current_cfg.tryke_log_level }
+    or nil
+
+  return command, env
+end
+
+local function build_direct_spec(args)
+  local position = args.tree:data()
+  local root = adapter.root(position.path)
+  local command, env = build_direct_argv(args, cfg, root)
   local results_path = nio.fn.tempname()
   lib.files.write(results_path, "")
   local stream_data, stop_stream = lib.files.stream_lines(results_path)
@@ -216,10 +241,7 @@ local function build_direct_spec(args)
   return {
     command = { "sh", "-c", cmd_str .. " > " .. shell_escape(results_path) },
     cwd = root,
-    -- Neotest forwards `env` onto the spawned process. Setting `TRYKE_LOG`
-    -- here lights up both rust runtime logs and python worker logs on the
-    -- child's stderr, which neotest surfaces in the run output panel.
-    env = cfg.tryke_log_level and { TRYKE_LOG = cfg.tryke_log_level } or nil,
+    env = env,
     context = {
       root = root,
       results_path = results_path,
@@ -564,6 +586,7 @@ end
 -- Internal helpers exposed for unit tests; not part of the neotest adapter
 -- contract. Prefixed with `_` to keep them out of the public surface.
 adapter._collect_test_ids = collect_test_ids
+adapter._build_direct_argv = build_direct_argv
 
 setmetatable(adapter, {
   __call = function(_, opts)
