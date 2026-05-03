@@ -132,6 +132,7 @@ local function build_test_position(file_path, test)
   local leaf = tryke_leaf(test)
   local display = test.display_name
   local has_display = type(display) == "string" and display ~= "" and display ~= test.name
+  local has_case = type(test.case_label) == "string" and test.case_label ~= ""
 
   -- For parametrized cases, `line_number` is the decorated function's line
   -- — every case for the same function would otherwise share it and the
@@ -139,7 +140,7 @@ local function build_test_position(file_path, test)
   -- Scan the source for the exact `test.case("label", …)` / kwarg / tuple
   -- declaration so each case gets a per-line range.
   local line = test.line_number or 1
-  if type(test.case_label) == "string" and test.case_label ~= "" then
+  if has_case then
     line = find_case_line(file_path, test.case_label, line)
   end
 
@@ -149,7 +150,15 @@ local function build_test_position(file_path, test)
     range = { line - 1, 0, line - 1, 0 },
   }
 
-  if test.case_label and test.case_label ~= vim.NIL and test.case_label ~= "" then
+  if has_case and has_display then
+    -- `@test("basic").cases(case("1+1"), …)` — show "basic[1+1]" so each
+    -- case is distinguishable while preserving the function-level label.
+    -- `_func_name` carries the runner-facing leaf (`labelled_addition[1+1]`)
+    -- so server-mode `to_server_id` continues to match the rust
+    -- `TestItem::id()` of `relative::function_name[case_label]`.
+    position.name = display .. "[" .. test.case_label .. "]"
+    position._func_name = leaf
+  elseif has_case then
     position.name = leaf
   elseif has_display then
     position.name = display

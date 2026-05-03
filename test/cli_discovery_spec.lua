@@ -106,6 +106,48 @@ describe("cli_discovery", function()
     assert.is_true(vim.tbl_contains(ids, "/proj/t.py::square[one]"))
   end)
 
+  it("composes display_name and case_label for labelled @test.cases rows", function()
+    -- Regression: `@test("basic").cases(case("1+1"), case("1+2"))` sets
+    -- both `display_name="basic"` and a per-row `case_label`. The old
+    -- code took the case branch first and showed the function leaf
+    -- (`labelled_addition[1+1]`) instead of `basic[1+1]`, collapsing the
+    -- function-level label entirely. `_func_name` keeps the runner-facing
+    -- leaf so server-mode `to_server_id` still matches `TestItem::id()`.
+    local tree
+    with_mock_system({ emit({
+      {
+        name = "labelled_addition",
+        file_path = "t.py",
+        line_number = 4,
+        display_name = "basic",
+        case_label = "1 + 1",
+        case_index = 0,
+      },
+      {
+        name = "labelled_addition",
+        file_path = "t.py",
+        line_number = 4,
+        display_name = "basic",
+        case_label = "1 + 2",
+        case_index = 1,
+      },
+    }) }, function()
+      tree = cli.discover("/proj/t.py", "/proj", "tryke")
+    end)
+    local names = {}
+    local func_names = {}
+    for _, p in ipairs(collect(tree)) do
+      if p.type == "test" then
+        table.insert(names, p.name)
+        table.insert(func_names, p._func_name)
+      end
+    end
+    assert.is_true(vim.tbl_contains(names, "basic[1 + 1]"))
+    assert.is_true(vim.tbl_contains(names, "basic[1 + 2]"))
+    assert.is_true(vim.tbl_contains(func_names, "labelled_addition[1 + 1]"))
+    assert.is_true(vim.tbl_contains(func_names, "labelled_addition[1 + 2]"))
+  end)
+
   it("uses display_name as position name but keeps test.name on _func_name", function()
     local tree
     with_mock_system({ emit({
