@@ -113,8 +113,13 @@ function adapter.discover_positions(file_path)
   log.debug("discover_positions:", file_path, "mode =", cfg.discovery)
   if cfg.discovery == "cli" then
     local root = adapter.root(file_path)
-    local ok, result =
-      pcall(require("neotest-tryke.cli_discovery").discover, file_path, root, cfg.tryke_command)
+    local ok, result = pcall(
+      require("neotest-tryke.cli_discovery").discover,
+      file_path,
+      root,
+      cfg.tryke_command,
+      cfg.python
+    )
     if ok then
       return result
     end
@@ -169,6 +174,11 @@ local function build_direct_spec(args)
   table.insert(command, "--reporter")
   table.insert(command, "json")
 
+  if cfg.python then
+    table.insert(command, "--python")
+    table.insert(command, cfg.python)
+  end
+
   if cfg.workers then
     table.insert(command, "--workers")
     table.insert(command, tostring(cfg.workers))
@@ -206,6 +216,10 @@ local function build_direct_spec(args)
   return {
     command = { "sh", "-c", cmd_str .. " > " .. shell_escape(results_path) },
     cwd = root,
+    -- Neotest forwards `env` onto the spawned process. Setting `TRYKE_LOG`
+    -- here lights up both rust runtime logs and python worker logs on the
+    -- child's stderr, which neotest surfaces in the run output panel.
+    env = cfg.tryke_log_level and { TRYKE_LOG = cfg.tryke_log_level } or nil,
     context = {
       root = root,
       results_path = results_path,

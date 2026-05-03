@@ -152,9 +152,29 @@ function M.ensure_server(config)
   local stderr = vim.uv.new_pipe()
 
   local cmd = config.tryke_command or "tryke"
-  log.info("server: spawning", cmd, "server --port", port)
+  local server_args = { "server", "--port", tostring(port) }
+  if config.python then
+    table.insert(server_args, "--python")
+    table.insert(server_args, config.python)
+  end
+
+  -- Forward `tryke_log_level` as `TRYKE_LOG` on the server child env,
+  -- which propagates to spawned python workers too. Inherit the rest of
+  -- the parent env (libuv defaults to a clean env when `env` is set, so
+  -- we have to splice the existing PATH/HOME/etc. ourselves).
+  local server_env = nil
+  if config.tryke_log_level then
+    server_env = {}
+    for k, v in pairs(vim.uv.os_environ() or {}) do
+      table.insert(server_env, k .. "=" .. v)
+    end
+    table.insert(server_env, "TRYKE_LOG=" .. config.tryke_log_level)
+  end
+
+  log.info("server: spawning", cmd, table.concat(server_args, " "))
   server_process = vim.uv.spawn(cmd, {
-    args = { "server", "--port", tostring(port) },
+    args = server_args,
+    env = server_env,
     stdio = { nil, stdout, stderr },
   }, function(code, signal)
     log.info("server: process exited code =", code, "signal =", signal)

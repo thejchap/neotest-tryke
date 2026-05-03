@@ -39,9 +39,11 @@ all options are optional. Defaults are shown below.
 ```lua
 require("neotest-tryke")({
   tryke_command = "tryke",   -- path to tryke binary
+  python = nil,              -- path to python interpreter (`--python <path>`); nil = tryke default
   mode = "direct",           -- "direct" (subprocess), "server" (persistent server), or "auto"
   discovery = "treesitter",  -- "treesitter" (in-process) or "cli" (shell out to tryke)
-  log_level = "info",        -- "trace" | "debug" | "info" | "warn" | "error"
+  log_level = "info",        -- plugin log verbosity (this plugin's own logger)
+  tryke_log_level = nil,     -- TRYKE_LOG forwarded to tryke (rust + python workers); nil = silent default
   args = {},                 -- extra CLI arguments passed to tryke
   workers = nil,             -- number of parallel workers (nil = tryke default)
   fail_fast = false,         -- stop on first failure
@@ -57,9 +59,11 @@ require("neotest-tryke")({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `tryke_command` | `string` | `"tryke"` | Path to the tryke binary |
+| `python` | `string\|nil` | `nil` | Path to the Python interpreter for spawned workers, forwarded as `--python <path>`. When unset, tryke uses bare `python`/`python3` from `PATH` — usually wrong unless your venv is active in the spawning environment. Point at the workspace venv or set `[tool.tryke] python` in `pyproject.toml`. |
 | `mode` | `string` | `"direct"` | Execution mode: `"direct"`, `"server"`, or `"auto"` |
 | `discovery` | `string` | `"treesitter"` | Test discovery backend: `"treesitter"` (in-process, fast) or `"cli"` (delegate to `tryke test --collect-only`) |
-| `log_level` | `string\|number` | `"info"` | Plugin log verbosity. String or numeric `vim.log.levels`. Logs go to `stdpath("log")/neotest-tryke.log`. |
+| `log_level` | `string\|number` | `"info"` | Plugin log verbosity (this plugin's own log file). String or numeric `vim.log.levels`. Logs go to `stdpath("log")/neotest-tryke.log`. |
+| `tryke_log_level` | `string\|nil` | `nil` | Set `TRYKE_LOG=<level>` on the spawned tryke process to surface rust runtime logs **and** python worker logs in neotest's output panel. Crank to `"info"` or `"debug"` when diagnosing a flaky worker; leave unset for normal runs. |
 | `args` | `string[]` | `{}` | Extra CLI arguments passed to tryke |
 | `workers` | `number\|nil` | `nil` | Number of parallel workers |
 | `fail_fast` | `boolean` | `false` | Stop on first failure |
