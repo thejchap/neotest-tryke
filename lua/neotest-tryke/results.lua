@@ -62,21 +62,31 @@ function M.diagnostic_lead(test)
   return nil
 end
 
---- Best-effort recovery of the per-expectation `name=` label from the
---- assertion expression. Tryke's wire `Assertion` type carries only
---- `expression` — the label is embedded in the source string — so we
---- look for `name="..."` / `name='...'` at a word boundary. Positional
---- labels (`expect(x, "label")`) are not extracted because pulling them
---- out reliably needs a real parser; users who want the label in the
---- diagnostic can write the kwarg form.
+--- Best-effort recovery of the per-expectation label from the assertion
+--- expression. Tryke's wire `Assertion` type carries only `expression`
+--- (the literal source line) — the label is embedded in it — so we
+--- pattern-match two common shapes:
+---   1. `name="..."` / `name='...'` kwarg form (anywhere in the line).
+---   2. `expect(<simple>, "...")` positional form, where `<simple>` is
+---      any sequence not containing parens or commas. This covers
+---      `expect(1, "label")`, `expect(x.y, "label")`,
+---      `expect("s", "label")`, etc., but bails out when the first arg
+---      itself has parens (e.g. `expect(f(x), "label")`) — extracting
+---      that reliably needs a real parser.
+--- Returns nil if neither shape matches.
 ---@param expression string|nil
 ---@return string|nil
 function M.expect_label(expression)
   if type(expression) ~= "string" then
     return nil
   end
-  return expression:match('%f[%a]name%s*=%s*"([^"]*)"')
+  local kwarg = expression:match('%f[%a]name%s*=%s*"([^"]*)"')
     or expression:match("%f[%a]name%s*=%s*'([^']*)'")
+  if kwarg then
+    return kwarg
+  end
+  return expression:match('expect%(%s*[^,()]-,%s*"([^"]*)"')
+    or expression:match("expect%(%s*[^,()]-,%s*'([^']*)'")
 end
 
 function M.build_id(root, test)

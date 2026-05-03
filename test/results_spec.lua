@@ -138,6 +138,34 @@ describe("convert_result", function()
 		assert.equal("test_sub: expected 3, received 5", r.errors[1].message)
 	end)
 
+	it("recovers positional `expect(<simple>, \"label\")` form", function()
+		-- vscode's parameter-name hints render `expect(1, "label")` as
+		-- `expect(expr=1, name="label")` in the editor, but the wire
+		-- expression carries the raw source — positional args, no
+		-- `name=` kwarg. The label still needs to surface in the
+		-- diagnostic.
+		local r = results.convert_result({
+			test = { name = "test_basic", display_name = "basic equality" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = 'expect(1, "1 equals itself").to_equal(2)',
+							expected = "2",
+							received = "1",
+							line = 27,
+						},
+					},
+				},
+			},
+		})
+		assert.equal(
+			"basic equality: 1 equals itself: expected 2, received 1",
+			r.errors[1].message
+		)
+	end)
+
 	it("recovers single-quoted name= label from expression", function()
 		local r = results.convert_result({
 			test = { name = "test_basic", display_name = "basic" },
