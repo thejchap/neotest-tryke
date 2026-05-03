@@ -240,10 +240,18 @@ end
 ---@param file_path string
 ---@param root string
 ---@param tryke_command string
+---@param python string|nil  Forwarded as `--python <path>` so collection
+---  uses the same interpreter as the test run; otherwise tryke falls back
+---  to PATH and may not find the project's tryke package, breaking
+---  discovery the same way it would break execution.
 ---@return table|nil
-function M.discover(file_path, root, tryke_command)
+function M.discover(file_path, root, tryke_command, python)
   local rel = relpath(file_path, root)
   local cmd = { tryke_command, "test", rel, "--collect-only", "--reporter", "json" }
+  if python then
+    table.insert(cmd, "--python")
+    table.insert(cmd, python)
+  end
   log.debug("cli_discover: spawn", table.concat(cmd, " "), "cwd =", root)
   local ok, result = pcall(function()
     return vim.system(cmd, { cwd = root, text = true }):wait()
