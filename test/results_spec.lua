@@ -31,7 +31,11 @@ describe("convert_result", function()
 		assert.equal("failed", r.status)
 		assert.equal("test_sub: failed", r.short)
 		assert.equal(1, #r.errors)
-		assert.equal("assert x == y: expected 3, received 5", r.errors[1].message)
+		-- The diagnostic leads with the test name (matching the test
+		-- tree entry) rather than the raw assertion expression — same
+		-- cascade as `falls back to function name when neither
+		-- display_name nor case_label set` below.
+		assert.equal("test_sub: expected 3, received 5", r.errors[1].message)
 		assert.equal(9, r.errors[1].line)
 	end)
 
@@ -40,7 +44,9 @@ describe("convert_result", function()
 		-- repeating it inside the diagnostic just crowds the gutter and
 		-- often gets truncated. Leading with the test's display_name
 		-- gives the diagnostic a stable, recognisable handle that
-		-- matches the test tree entry.
+		-- matches the test tree entry. The per-expectation `name=`
+		-- label is appended when set so individual asserts in a test
+		-- with multiple expectations stay distinguishable.
 		local r = results.convert_result({
 			test = { name = "test_basic", display_name = "basic equality" },
 			outcome = {
@@ -48,7 +54,7 @@ describe("convert_result", function()
 				detail = {
 					assertions = {
 						{
-							expression = 'expect(1, "1 equals itself").to_equal(2)',
+							expression = 'expect(1, name="1 equals itself").to_equal(2)',
 							expected = "2",
 							received = "1",
 							line = 6,
@@ -57,11 +63,62 @@ describe("convert_result", function()
 				},
 			},
 		})
-		assert.equal("basic equality: expected 2, received 1", r.errors[1].message)
+		assert.equal("basic equality: 1 equals itself: expected 2, received 1", r.errors[1].message)
 		assert.equal(5, r.errors[1].line)
 	end)
 
-	it("falls back to expression when display_name is absent", function()
+	it("composes display_name with case_label for parametrised cases", function()
+		-- Mirrors the test-tree entry `basic[1+1]` when an `@test("basic")
+		-- .cases(case("1+1"), …)` row fails.
+		local r = results.convert_result({
+			test = { name = "labelled_addition", display_name = "basic", case_label = "1 + 1" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = 'expect(a + b, name="a + b matches expected").to_equal(expected)',
+							expected = "2",
+							received = "3",
+							line = 4,
+						},
+					},
+				},
+			},
+		})
+		assert.equal(
+			"basic[1 + 1]: a + b matches expected: expected 2, received 3",
+			r.errors[1].message
+		)
+	end)
+
+	it("uses function-name leaf for parametrised cases without @test(name)", function()
+		-- Bare `@test.cases(...)` doesn't set display_name, so the cascade
+		-- falls through to the python function name composed with the
+		-- case label — a much cleaner handle than the raw expression.
+		local r = results.convert_result({
+			test = { name = "square_typed", case_label = "one" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = 'expect(n * n, name="n squared matches expected").to_equal(expected)',
+							expected = "2",
+							received = "1",
+							line = 5,
+						},
+					},
+				},
+			},
+		})
+		assert.equal(
+			"square_typed[one]: n squared matches expected: expected 2, received 1",
+			r.errors[1].message
+		)
+	end)
+
+	it("falls back to function name when neither display_name nor case_label set", function()
 		local r = results.convert_result({
 			test = { name = "test_sub" },
 			outcome = {
@@ -78,7 +135,27 @@ describe("convert_result", function()
 				},
 			},
 		})
-		assert.equal("assert x == y: expected 3, received 5", r.errors[1].message)
+		assert.equal("test_sub: expected 3, received 5", r.errors[1].message)
+	end)
+
+	it("recovers single-quoted name= label from expression", function()
+		local r = results.convert_result({
+			test = { name = "test_basic", display_name = "basic" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = "expect(x, name='quoted label').to_equal(2)",
+							expected = "2",
+							received = "1",
+							line = 4,
+						},
+					},
+				},
+			},
+		})
+		assert.equal("basic: quoted label: expected 2, received 1", r.errors[1].message)
 	end)
 
 	it("maps failed with message only", function()

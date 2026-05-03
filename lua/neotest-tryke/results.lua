@@ -32,6 +32,53 @@ local function user_frame_line(traceback, file_path)
   return last
 end
 
+--- Build the test-level handle used to lead inline assertion diagnostics.
+--- Mirrors cli_discovery.lua's position-name cascade so the diagnostic
+--- text matches the test tree entry the user sees:
+---   * `@test("name")` → display_name (composed with `[case_label]` for
+---     parametrised cases).
+---   * bare `@test.cases(...)` → function name (composed with
+---     `[case_label]` for parametrised cases).
+---   * plain `@test` → function name.
+--- Returns nil only when neither display_name nor name is set, in which
+--- case the caller falls back to the raw expression.
+---@param test table
+---@return string|nil
+function M.diagnostic_lead(test)
+  local has_display = type(test.display_name) == "string" and test.display_name ~= ""
+  local has_case = type(test.case_label) == "string" and test.case_label ~= ""
+  if has_display and has_case then
+    return test.display_name .. "[" .. test.case_label .. "]"
+  end
+  if has_display then
+    return test.display_name
+  end
+  if type(test.name) == "string" and test.name ~= "" then
+    if has_case then
+      return test.name .. "[" .. test.case_label .. "]"
+    end
+    return test.name
+  end
+  return nil
+end
+
+--- Best-effort recovery of the per-expectation `name=` label from the
+--- assertion expression. Tryke's wire `Assertion` type carries only
+--- `expression` — the label is embedded in the source string — so we
+--- look for `name="..."` / `name='...'` at a word boundary. Positional
+--- labels (`expect(x, "label")`) are not extracted because pulling them
+--- out reliably needs a real parser; users who want the label in the
+--- diagnostic can write the kwarg form.
+---@param expression string|nil
+---@return string|nil
+function M.expect_label(expression)
+  if type(expression) ~= "string" then
+    return nil
+  end
+  return expression:match('%f[%a]name%s*=%s*"([^"]*)"')
+    or expression:match("%f[%a]name%s*=%s*'([^']*)'")
+end
+
 function M.build_id(root, test)
   local joinpath = vim.fs and vim.fs.joinpath or function(a, b)
     return a .. "/" .. b
@@ -70,20 +117,26 @@ function M.convert_result(tryke_result)
     local detail = outcome.detail
 
     if detail and detail.assertions and #detail.assertions > 0 then
-      -- Lead the inline diagnostic with the test's display name when
-      -- present so users can correlate the failure with the test tree
-      -- entry. The full assertion expression is on the line being
-      -- annotated, so repeating it inside the diagnostic only crowds
-      -- the gutter. For tests without a display name (no `@test("name")`
-      -- and no docstring), fall back to the expression — there's no
-      -- more identifying label to lead with.
-      local has_display = type(tryke_result.test.display_name) == "string"
-        and tryke_result.test.display_name ~= ""
-      local lead_default = has_display and tryke_result.test.display_name or nil
+      -- Lead the inline diagnostic with the test-level handle so it
+      -- correlates with the test tree, then append the per-expectation
+      -- `name=` label when set. The full expression is already on the
+      -- annotated line, so duplicating it in the diagnostic only crowds
+      -- the gutter and gets truncated on narrow screens.
+      local test_lead = M.diagnostic_lead(tryke_result.test)
       for _, assertion in ipairs(detail.assertions) do
-        local lead = lead_default or assertion.expression
+        local label = M.expect_label(assertion.expression)
+        local prefix
+        if test_lead and label then
+          prefix = test_lead .. ": " .. label
+        elseif test_lead then
+          prefix = test_lead
+        elseif label then
+          prefix = label
+        else
+          prefix = assertion.expression or ""
+        end
         table.insert(errors, {
-          message = lead
+          message = prefix
             .. ": expected "
             .. assertion.expected
             .. ", received "
