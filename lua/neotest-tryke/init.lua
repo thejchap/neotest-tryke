@@ -325,12 +325,41 @@ local function collect_test_ids(tree, position, root)
   return ids
 end
 
+--- Unique absolute paths of every test file in this run. Sent to the
+--- server via `did_change` immediately before `run` so the server can
+--- mark the worker pool dirty (and refresh discovery for these files)
+--- synchronously on the same TCP connection. Without this, a `run` that
+--- arrives inside the FS watcher's 50ms debounce can dispatch against
+--- workers whose `sys.modules` cache predates the just-completed save —
+--- the user perceives flaky test outcomes that disagree with the buffer.
+local function collect_test_file_paths(tree, position)
+  local seen = {}
+  local paths = {}
+  local function add(path)
+    if path and not seen[path] then
+      seen[path] = true
+      table.insert(paths, path)
+    end
+  end
+  if position.type == "test" then
+    add(position.path)
+  else
+    for _, pos in tree:iter() do
+      if pos.type == "test" then
+        add(pos.path)
+      end
+    end
+  end
+  return paths
+end
+
 local function build_server_spec(args)
   local tree = args.tree
   local position = tree:data()
   local root = adapter.root(position.path)
 
   local test_ids = collect_test_ids(tree, position, root)
+  local file_paths = collect_test_file_paths(tree, position)
   log.debug("build_server_spec: sending", #test_ids, "test id(s) to server")
   for _, tid in ipairs(test_ids) do
     log.trace("build_server_spec: test id =", tid)
@@ -413,6 +442,21 @@ local function build_server_spec(args)
         end
         run_complete_event.set()
       end)
+
+      -- In-band signal: tell the server which files we just touched
+      -- BEFORE sending the run, on the same TCP connection. The server's
+      -- ConnectionHandler reads + handles requests serially per
+      -- connection, so by the time `run` is read the `did_change`
+      -- handler has already flipped the worker pool's dirty flag — the
+      -- subsequent `execute_run` is guaranteed to restart workers
+      -- before dispatch, eliminating the race where a worker serves a
+      -- pre-save cached `sys.modules`. `send_did_change` gracefully
+      -- falls through on METHOD_NOT_FOUND, so older servers keep
+      -- working (with today's FS-watcher-only behaviour).
+      if #file_paths > 0 then
+        log.debug("server: sending did_change for", #file_paths, "file(s)")
+        server.send_did_change(file_paths)
+      end
 
       local params = { run_id = run_id }
       if #test_ids > 0 then
