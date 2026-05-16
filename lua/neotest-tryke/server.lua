@@ -154,6 +154,39 @@ function M.on_notification(method, handler)
   notification_handlers[method] = handler
 end
 
+--- Send an in-band `did_change` notice to the server for the given file
+--- paths, then wait for the response. Must be called BEFORE the
+--- corresponding `run` on the same connection — that ordering is what
+--- closes the server-mode race where a `run` arriving inside the
+--- watcher's debounce window dispatches against workers whose cached
+--- `sys.modules` predates the save.
+---
+--- An older server that doesn't know `did_change` will reply with a
+--- METHOD_NOT_FOUND error (code -32601); we treat that as "fall through
+--- to today's FS-watcher-only behaviour" rather than failing the run.
+--- Any other error is logged and also treated as a graceful fall-through
+--- — we'd rather race occasionally than block the user's run.
+---
+--- @param paths string[] absolute filesystem paths
+--- @return boolean ok true if the server acknowledged, false on
+---   METHOD_NOT_FOUND or other error (caller can proceed with `run`
+---   either way)
+function M.send_did_change(paths)
+  local METHOD_NOT_FOUND = -32601
+  local future = M.send_request("did_change", { paths = paths })
+  local resp = future.wait()
+  if resp and resp.error then
+    if resp.error.code == METHOD_NOT_FOUND then
+      log.debug("server: did_change unsupported (older server), falling through")
+    else
+      log.warn("server: did_change error", resp.error.code, resp.error.message)
+    end
+    return false
+  end
+  log.trace("server: did_change ack", paths)
+  return true
+end
+
 function M.ensure_server(config)
   last_config = config
   local host = config.server.host
