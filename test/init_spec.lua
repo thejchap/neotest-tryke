@@ -265,6 +265,136 @@ describe("collect_test_ids", function()
   end)
 end)
 
+describe("collect_test_file_paths", function()
+  -- Sent to the server via `did_change` BEFORE `run` so it can mark the
+  -- worker pool dirty and refresh discovery on the same TCP connection.
+  -- The ordering matters because the server reads requests serially per
+  -- connection; the contents matter because the server uses the paths
+  -- both for `affected_modules` and as a defence-in-depth project-root
+  -- filter. Tests below exercise the three branches the helper has:
+  -- single test position, tree iteration over multiple tests, and
+  -- dedup-via-`seen`.
+
+  it("returns a single-element list for a test position", function()
+    local tree = build_tree({
+      {
+        type = "test",
+        path = "/proj/tests/math.py",
+        name = "test_add",
+        id = "/proj/tests/math.py::test_add",
+        range = { 0, 0, 0, 0 },
+      },
+    })
+    local paths = adapter._collect_test_file_paths(tree, tree:data())
+    assert.same({ "/proj/tests/math.py" }, paths)
+  end)
+
+  it("collects every unique file under a file position via tree iteration", function()
+    -- All tests share one file → dedup keeps the file in the result
+    -- exactly once.
+    local tree = build_tree({
+      {
+        type = "file",
+        path = "/proj/tests/math.py",
+        name = "math.py",
+        id = "/proj/tests/math.py",
+        range = { 0, 0, 10, 0 },
+      },
+      {
+        {
+          type = "test",
+          path = "/proj/tests/math.py",
+          name = "test_add",
+          id = "/proj/tests/math.py::test_add",
+          range = { 0, 0, 0, 0 },
+        },
+      },
+      {
+        {
+          type = "test",
+          path = "/proj/tests/math.py",
+          name = "test_sub",
+          id = "/proj/tests/math.py::test_sub",
+          range = { 1, 0, 1, 0 },
+        },
+      },
+    })
+    local paths = adapter._collect_test_file_paths(tree, tree:data())
+    assert.same({ "/proj/tests/math.py" }, paths)
+  end)
+
+  it("returns one entry per distinct file when tests span multiple files", function()
+    -- A dir-level run drains tests from multiple files; the helper
+    -- must report each file exactly once (no duplicates) so the
+    -- server's `did_change` payload is minimal and the affected-modules
+    -- gate doesn't over-restart.
+    local tree = build_tree({
+      {
+        type = "dir",
+        path = "/proj/tests",
+        name = "tests",
+        id = "/proj/tests",
+        range = { 0, 0, 0, 0 },
+      },
+      {
+        {
+          type = "file",
+          path = "/proj/tests/math.py",
+          name = "math.py",
+          id = "/proj/tests/math.py",
+          range = { 0, 0, 5, 0 },
+        },
+        {
+          {
+            type = "test",
+            path = "/proj/tests/math.py",
+            name = "test_add",
+            id = "/proj/tests/math.py::test_add",
+            range = { 0, 0, 0, 0 },
+          },
+        },
+      },
+      {
+        {
+          type = "file",
+          path = "/proj/tests/strings.py",
+          name = "strings.py",
+          id = "/proj/tests/strings.py",
+          range = { 0, 0, 5, 0 },
+        },
+        {
+          {
+            type = "test",
+            path = "/proj/tests/strings.py",
+            name = "test_upper",
+            id = "/proj/tests/strings.py::test_upper",
+            range = { 0, 0, 0, 0 },
+          },
+        },
+      },
+    })
+    local paths = adapter._collect_test_file_paths(tree, tree:data())
+    table.sort(paths)
+    assert.same({ "/proj/tests/math.py", "/proj/tests/strings.py" }, paths)
+  end)
+
+  it("returns an empty list when the tree has no test positions", function()
+    -- A `file` position with no `test` children (e.g. discovery
+    -- failed) should not produce a phantom path.
+    local tree = build_tree({
+      {
+        type = "file",
+        path = "/proj/tests/empty.py",
+        name = "empty.py",
+        id = "/proj/tests/empty.py",
+        range = { 0, 0, 0, 0 },
+      },
+    })
+    local paths = adapter._collect_test_file_paths(tree, tree:data())
+    assert.same({}, paths)
+  end)
+end)
+
 describe("build_direct_argv", function()
   -- Direct-mode argv is the runner's primary contract: it controls the
   -- argv passed to `tryke test` and any env (TRYKE_LOG) the child sees.
