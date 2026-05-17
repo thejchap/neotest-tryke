@@ -474,6 +474,21 @@ local function build_server_spec(args)
           local reconnect = server.connect(cfg.server.host, cfg.server.port)
           reconnect.wait()
         end
+        -- Older server doesn't know `did_change`. Without it, the
+        -- server's `disc.tests()` cache is whatever its FS watcher last
+        -- picked up — which may not include tests the user just added.
+        -- The `run` we're about to send filters by `tests = [test_ids]`,
+        -- and the server drops any id not in `disc.tests()`, so a
+        -- stale-discovery server returns "0 tests run, every tree test
+        -- skipped." Fall back to the always-supported `discover` method
+        -- to force a full rediscover before sending `run`. Costlier than
+        -- did_change (O(project files) vs O(changed files)) but it's
+        -- per-run, not per-test, and dwarfed by the run itself.
+        if outcome == server.DID_CHANGE.UNSUPPORTED then
+          log.debug("server: falling back to discover for stale-server compat")
+          local discover_future = server.send_request("discover", { root = root })
+          discover_future.wait()
+        end
       end
 
       local params = { run_id = run_id }
