@@ -476,11 +476,54 @@ function M.ensure_server(config)
   error("tryke server failed to start within timeout")
 end
 
+--- How long to wait for a SIGTERM'd server to reap before escalating
+--- to SIGKILL. The on-exit callback registered in `ensure_server` nils
+--- `server_process` when the OS actually reaps the child; until that
+--- happens the kernel still holds the listening socket, and an
+--- immediate respawn into the same port hits `Address already in
+--- use`. 2 seconds is plenty for a graceful tryke server shutdown
+--- (it just drops its worker pool and exits); the SIGKILL escalation
+--- catches the wedged case.
+local STOP_SIGTERM_WAIT_MS = 2000
+local STOP_SIGKILL_WAIT_MS = 500
+
 function M.stop_server()
-  if server_process then
+  if server_process and not server_process:is_closing() then
+    local pid = server_process:get_pid()
     server_process:kill("sigterm")
-    server_process = nil
+
+    -- WAIT for the on-exit callback to nil `server_process`. SIGTERM
+    -- is asynchronous; without this wait the next spawn races the
+    -- kernel releasing the listening socket and can fail with
+    -- "Address already in use" — defeating the whole point of the
+    -- respawn path in `ensure_server`.
+    --
+    -- `vim.wait` (not `nio.sleep`) so this works from both the nio
+    -- coroutine that drives `ensure_server` AND the VimLeavePre
+    -- autocmd where nio may not be schedulable.
+    local exited = vim.wait(STOP_SIGTERM_WAIT_MS, function()
+      return server_process == nil
+    end, 25)
+
+    if not exited then
+      log.warn(
+        "server: SIGTERM didn't reap pid",
+        pid,
+        "within",
+        STOP_SIGTERM_WAIT_MS,
+        "ms — escalating to SIGKILL"
+      )
+      pcall(function()
+        server_process:kill("sigkill")
+      end)
+      vim.wait(STOP_SIGKILL_WAIT_MS, function()
+        return server_process == nil
+      end, 25)
+    end
   end
+  -- Belt + braces: if the waits timed out (e.g. nvim shutting down,
+  -- libuv loop frozen), nil the handle anyway so we don't leak it.
+  server_process = nil
   M.disconnect()
 end
 
