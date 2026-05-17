@@ -265,6 +265,69 @@ function M.send_did_change(paths)
   return DID_CHANGE.ACKED
 end
 
+--- Bounded, isolated liveness probe for the server we spawned
+--- earlier this session.
+---
+--- "Bounded" because an unbounded ping wait would hang
+--- `ensure_server` forever against a wedged-but-listening server
+--- (TCP accepts, ping never answers — e.g. a stuck prior run
+--- holding `disc.lock`), turning a recoverable failure into a
+--- persistent session lockup.
+---
+--- "Isolated" because using `M.connect` / `M.send_request` would
+--- mutate the module-level `handle` and `pending_requests`. If a
+--- naive `nio.first(probe, timeout)` lets the timeout win, the
+--- probe coroutine keeps running — `nio.first` doesn't cancel the
+--- loser. A late `M.disconnect()` from that coroutine would then
+--- tear down the new server's connection in the respawn path.
+--- Using a fresh libuv socket here keeps the probe's only outside-
+--- world side effect a `close()` on its own handle.
+---
+--- We don't bother parsing the JSON-RPC response. Any bytes back on
+--- the socket are sufficient liveness evidence; for the wedged-
+--- server case we care about, a wedged server won't write at all.
+---
+--- @param host string
+--- @param port number
+--- @param timeout_ms number
+--- @return boolean alive
+local function probe_alive(host, port, timeout_ms)
+  local probe_handle = vim.uv.new_tcp()
+  -- nil = still probing, true = got a response, false = error/EOF
+  local result = nil
+  vim.uv.tcp_connect(probe_handle, host, port, function(err)
+    if err then
+      result = false
+      return
+    end
+    probe_handle:write('{"jsonrpc":"2.0","id":0,"method":"ping"}\n')
+    probe_handle:read_start(function(read_err, data)
+      if data then
+        result = true
+      elseif read_err then
+        result = false
+      end
+    end)
+  end)
+
+  -- Poll for completion. 50ms granularity is fine for a 1s budget.
+  local elapsed = 0
+  while result == nil and elapsed < timeout_ms do
+    nio.sleep(50)
+    elapsed = elapsed + 50
+  end
+
+  -- Always tear down. If a libuv callback fires after this point it
+  -- harmlessly writes to `result` (an unreferenced upvalue), and
+  -- `probe_handle:close()` is idempotent.
+  if not probe_handle:is_closing() then
+    probe_handle:read_stop()
+    probe_handle:close()
+  end
+
+  return result == true
+end
+
 function M.ensure_server(config)
   last_config = config
   local host = config.server.host
@@ -298,39 +361,13 @@ function M.ensure_server(config)
   -- for this nvim session.
   --
   -- If `server_process` is non-nil, we already spawned one earlier
-  -- in this session — reuse it. (Confirmed live via a ping; the
-  -- on-exit callback nils the handle when the process dies, but
-  -- a libuv handle outliving the process is technically possible
-  -- between callback fire and our next read of the variable.)
-  -- Without this, the second test run in a session always errors
-  -- because the port is bound by the server WE spawned for the
-  -- first run.
-  --
-  -- The liveness probe is BOUNDED. A wedged-but-listening server
-  -- (TCP accepts, ping never answers — e.g. a stuck prior run
-  -- holding `disc.lock`) would otherwise hang `ensure_server`
-  -- forever in `pong.wait()`, turning a recoverable failure into
-  -- a persistent session lockup. 1s is generous for a localhost
-  -- ping; if it doesn't answer in that window, treat the handle as
-  -- stale and respawn.
+  -- in this session — reuse it after a bounded, isolated liveness
+  -- check (see `probe_alive`). The previous unbounded `pong.wait()`
+  -- would hang `ensure_server` forever against a wedged-but-
+  -- listening server, turning every subsequent test run in the
+  -- session into a lockup.
   if server_process ~= nil then
-    local alive = false
-    nio.first({
-      function()
-        alive = pcall(function()
-          local f = M.connect(host, port)
-          f.wait()
-          local pong = M.send_request("ping")
-          pong.wait()
-          M.disconnect()
-        end)
-      end,
-      function()
-        nio.sleep(1000)
-      end,
-    })
-    M.disconnect() -- idempotent; cleans up if the probe coroutine was abandoned
-    if alive then
+    if probe_alive(host, port, 1000) then
       log.debug("server: reusing server spawned earlier this session")
       return true
     end
