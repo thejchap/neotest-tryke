@@ -163,11 +163,11 @@ local DID_CHANGE_TIMEOUT_MS = 2000
 --- Outcome of a `send_did_change` call. The caller can log this for
 --- diagnosability; the run should proceed in every branch.
 local DID_CHANGE = {
-  ACKED = "acked",                  -- server replied with a result
-  UNSUPPORTED = "unsupported",      -- METHOD_NOT_FOUND (older server)
-  ERROR = "error",                  -- server returned a non-NOT_FOUND error
-  TIMEOUT = "timeout",              -- no reply within DID_CHANGE_TIMEOUT_MS
-  MALFORMED = "malformed",          -- reply has neither result nor error
+  ACKED = "acked", -- server replied with a result
+  UNSUPPORTED = "unsupported", -- METHOD_NOT_FOUND (older server)
+  ERROR = "error", -- server returned a non-NOT_FOUND error
+  TIMEOUT = "timeout", -- no reply within DID_CHANGE_TIMEOUT_MS
+  MALFORMED = "malformed", -- reply has neither result nor error
 }
 M.DID_CHANGE = DID_CHANGE
 

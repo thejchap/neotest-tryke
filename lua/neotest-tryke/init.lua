@@ -460,11 +460,7 @@ local function build_server_spec(args)
         log.debug("server: sending did_change for", #file_paths, "file(s)")
         local outcome = server.send_did_change(file_paths)
         if outcome ~= server.DID_CHANGE.ACKED then
-          log.warn(
-            "server: did_change outcome =",
-            outcome,
-            "— run may race recent file changes"
-          )
+          log.warn("server: did_change outcome =", outcome, "— run may race recent file changes")
         end
       end
 
