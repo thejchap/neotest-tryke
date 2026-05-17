@@ -56,6 +56,16 @@ end
 function M.connect(host, port)
   local endpoint = host .. ":" .. tostring(port)
   log.debug("server: connect", endpoint)
+
+  -- Close any handle from a prior connection that wasn't explicitly
+  -- disconnected (e.g. an error path that returned before its final
+  -- `M.disconnect()`). Without this, assigning the module-global
+  -- `handle` below leaks the previous socket FD, and any unread
+  -- notifications buffered on it could interfere with the new
+  -- session. This is purely defensive — normal flows always
+  -- disconnect in their cleanup branch — but cheap and idempotent.
+  M.disconnect()
+
   local future = nio.control.future()
 
   handle = vim.uv.new_tcp()
