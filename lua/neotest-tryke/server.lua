@@ -412,7 +412,15 @@ function M.ensure_server(config)
   local exit_signal = nil
 
   log.info("server: spawning", cmd, table.concat(server_args, " "))
-  server_process = vim.uv.spawn(cmd, {
+  -- `own_handle` is captured by the exit callback as an upvalue.
+  -- The callback only nils `server_process` when it still points at
+  -- this specific handle. Without that guard, a late exit callback
+  -- from a previously-killed server (e.g. after `stop_server`'s
+  -- waits timed out and ensure_server already respawned) would
+  -- unconditionally erase the new process's handle, breaking the
+  -- next `is_alive`/reuse/cleanup decision.
+  local own_handle = nil
+  own_handle = vim.uv.spawn(cmd, {
     args = server_args,
     env = server_env,
     stdio = { nil, stdout, stderr },
@@ -420,8 +428,11 @@ function M.ensure_server(config)
     log.info("server: process exited code =", code, "signal =", signal)
     exit_code = code
     exit_signal = signal
-    server_process = nil
+    if server_process == own_handle then
+      server_process = nil
+    end
   end)
+  server_process = own_handle
 
   if not server_process then
     log.error("server: failed to spawn", cmd)
