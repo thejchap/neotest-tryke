@@ -295,8 +295,36 @@ function M.ensure_server(config)
   end
 
   -- auto_start=true (default): the plugin owns the server lifecycle
-  -- for this nvim session. ALWAYS spawn. We never piggy-back on
-  -- whatever happens to be listening, because that's silently fatal
+  -- for this nvim session.
+  --
+  -- If `server_process` is non-nil, we already spawned one earlier
+  -- in this session — reuse it. (Confirmed live via a ping; the
+  -- on-exit callback nils the handle when the process dies, but
+  -- a libuv handle outliving the process is technically possible
+  -- between callback fire and our next read of the variable.)
+  -- Without this, the second test run in a session always errors
+  -- because the port is bound by the server WE spawned for the
+  -- first run.
+  if server_process ~= nil then
+    local alive = pcall(function()
+      local f = M.connect(host, port)
+      f.wait()
+      local pong = M.send_request("ping")
+      pong.wait()
+      M.disconnect()
+    end)
+    if alive then
+      log.debug("server: reusing server spawned earlier this session")
+      return true
+    end
+    log.warn("server: handle present but not responding — respawning")
+    M.disconnect()
+    M.stop_server()
+  end
+
+  -- First spawn this session (or a respawn after the previous one
+  -- died). ALWAYS try the spawn. We never piggy-back on a port
+  -- bound by a process we didn't spawn — that's silently fatal
   -- when the other process is a tryke server for a different project
   -- (its `discover` returns the wrong tests, `run` filters them all
   -- out, and you spend the session staring at "0 tests run" with no
