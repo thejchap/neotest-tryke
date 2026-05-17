@@ -305,20 +305,36 @@ function M.ensure_server(config)
   -- Without this, the second test run in a session always errors
   -- because the port is bound by the server WE spawned for the
   -- first run.
+  --
+  -- The liveness probe is BOUNDED. A wedged-but-listening server
+  -- (TCP accepts, ping never answers — e.g. a stuck prior run
+  -- holding `disc.lock`) would otherwise hang `ensure_server`
+  -- forever in `pong.wait()`, turning a recoverable failure into
+  -- a persistent session lockup. 1s is generous for a localhost
+  -- ping; if it doesn't answer in that window, treat the handle as
+  -- stale and respawn.
   if server_process ~= nil then
-    local alive = pcall(function()
-      local f = M.connect(host, port)
-      f.wait()
-      local pong = M.send_request("ping")
-      pong.wait()
-      M.disconnect()
-    end)
+    local alive = false
+    nio.first({
+      function()
+        alive = pcall(function()
+          local f = M.connect(host, port)
+          f.wait()
+          local pong = M.send_request("ping")
+          pong.wait()
+          M.disconnect()
+        end)
+      end,
+      function()
+        nio.sleep(1000)
+      end,
+    })
+    M.disconnect() -- idempotent; cleans up if the probe coroutine was abandoned
     if alive then
       log.debug("server: reusing server spawned earlier this session")
       return true
     end
     log.warn("server: handle present but not responding — respawning")
-    M.disconnect()
     M.stop_server()
   end
 
