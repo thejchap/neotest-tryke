@@ -98,6 +98,12 @@ function M.disconnect()
   pending_requests = {}
 end
 
+--- Send a JSON-RPC request and return the future that resolves when the
+--- server replies. The future is keyed by id in `pending_requests`; if
+--- the caller gives up on the wait it should call `M.cancel_request(id)`
+--- (or `M.disconnect()`, which clears the whole table) to avoid leaking
+--- an orphaned entry that a late server reply would silently resolve.
+--- Returns `(future, id)`.
 function M.send_request(method, params)
   request_id = request_id + 1
   local id = request_id
@@ -117,7 +123,16 @@ function M.send_request(method, params)
   ---@diagnostic disable-next-line: need-check-nil, undefined-field
   handle:write(message)
 
-  return future
+  return future, id
+end
+
+--- Drop the pending entry for a request the caller no longer cares
+--- about. Safe to call for an already-resolved id (no-op). Used by
+--- bounded waits (e.g. `send_did_change` on TIMEOUT) so a late server
+--- reply doesn't resolve a future no one is awaiting; without this the
+--- entry survives until `M.disconnect()`.
+function M.cancel_request(id)
+  pending_requests[id] = nil
 end
 
 function M._on_data(data)
@@ -155,9 +170,10 @@ function M.on_notification(method, handler)
 end
 
 --- How long to wait for a `did_change` ack before giving up and
---- proceeding to `run`. Matches the bound used for `run_complete` in
---- init.lua so the run can't hang on a slow / unresponsive server even
---- if its FS watcher races us.
+--- proceeding to `run`. Intentionally the same magnitude as the
+--- `run_complete` bound at init.lua:486 — both protect against the same
+--- failure mode (a server task wedged with neither response nor
+--- progress). If you tune one, look at the other.
 local DID_CHANGE_TIMEOUT_MS = 2000
 
 --- Outcome of a `send_did_change` call. The caller can log this for
@@ -192,14 +208,18 @@ M.DID_CHANGE = DID_CHANGE
 ---   the run may race the on-disk content.
 function M.send_did_change(paths)
   local METHOD_NOT_FOUND = -32601
-  local future = M.send_request("did_change", { paths = paths })
+  local future, id = M.send_request("did_change", { paths = paths })
 
   -- Bounded wait: `future.wait()` would block forever if the server
   -- accepted the connection but never replied (slow discovery,
   -- swallowed reply, deadlock, M.disconnect() clearing the pending
   -- requests table). Race the wait against a sleep, exactly like
   -- `run_complete_event` does in init.lua:470-483. nio.first returns
-  -- as soon as either branch completes.
+  -- as soon as either branch completes; it does NOT cancel the loser,
+  -- so the `future.wait()` coroutine keeps running and may write to
+  -- `resp` / `timed_out` after we return — harmless because we never
+  -- read them again, but it does mean the closure stays alive until
+  -- the server reply or the disconnect arrives.
   local resp = nil
   local timed_out = true
   nio.first({
@@ -213,6 +233,13 @@ function M.send_did_change(paths)
   })
 
   if timed_out then
+    -- Drop the pending entry so a late reply doesn't resolve a
+    -- future no one is awaiting (which the on_data handler would
+    -- still try to consume, harmless but noisy). Caller (init.lua)
+    -- will disconnect + reconnect before sending `run` so the run
+    -- doesn't queue behind the still-processing `did_change` on
+    -- this same socket.
+    M.cancel_request(id)
     log.warn("server: did_change timed out after", DID_CHANGE_TIMEOUT_MS, "ms — proceeding")
     return DID_CHANGE.TIMEOUT
   end

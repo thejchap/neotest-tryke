@@ -462,6 +462,18 @@ local function build_server_spec(args)
         if outcome ~= server.DID_CHANGE.ACKED then
           log.warn("server: did_change outcome =", outcome, "— run may race recent file changes")
         end
+        -- If `did_change` timed out, the server is still processing it
+        -- on this socket's read loop. Sending `run` on the same socket
+        -- would queue behind that processing and `response_future.wait()`
+        -- below is unbounded — best case it eventually unblocks, worst
+        -- case it never does. Drop the socket and reconnect so the run
+        -- lands on a fresh ConnectionHandler the server can dispatch in
+        -- parallel.
+        if outcome == server.DID_CHANGE.TIMEOUT then
+          server.disconnect()
+          local reconnect = server.connect(cfg.server.host, cfg.server.port)
+          reconnect.wait()
+        end
       end
 
       local params = { run_id = run_id }
