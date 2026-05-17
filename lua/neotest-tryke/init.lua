@@ -450,12 +450,22 @@ local function build_server_spec(args)
       -- handler has already flipped the worker pool's dirty flag — the
       -- subsequent `execute_run` is guaranteed to restart workers
       -- before dispatch, eliminating the race where a worker serves a
-      -- pre-save cached `sys.modules`. `send_did_change` gracefully
-      -- falls through on METHOD_NOT_FOUND, so older servers keep
-      -- working (with today's FS-watcher-only behaviour).
+      -- pre-save cached `sys.modules`. `send_did_change` is bounded
+      -- and never blocks the run — every non-ACKED outcome (older
+      -- server, timeout, malformed, error) falls through to the
+      -- existing FS-watcher behaviour. Surface the outcome so users
+      -- diagnosing flaky watch-mode results can tell which branch
+      -- they hit just from the neotest-tryke log.
       if #file_paths > 0 then
         log.debug("server: sending did_change for", #file_paths, "file(s)")
-        server.send_did_change(file_paths)
+        local outcome = server.send_did_change(file_paths)
+        if outcome ~= server.DID_CHANGE.ACKED then
+          log.warn(
+            "server: did_change outcome =",
+            outcome,
+            "— run may race recent file changes"
+          )
+        end
       end
 
       local params = { run_id = run_id }
@@ -628,6 +638,7 @@ end
 -- Internal helpers exposed for unit tests; not part of the neotest adapter
 -- contract. Prefixed with `_` to keep them out of the public surface.
 adapter._collect_test_ids = collect_test_ids
+adapter._collect_test_file_paths = collect_test_file_paths
 adapter._build_direct_argv = build_direct_argv
 
 setmetatable(adapter, {

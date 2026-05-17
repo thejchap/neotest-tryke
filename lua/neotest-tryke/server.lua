@@ -154,37 +154,88 @@ function M.on_notification(method, handler)
   notification_handlers[method] = handler
 end
 
+--- How long to wait for a `did_change` ack before giving up and
+--- proceeding to `run`. Matches the bound used for `run_complete` in
+--- init.lua so the run can't hang on a slow / unresponsive server even
+--- if its FS watcher races us.
+local DID_CHANGE_TIMEOUT_MS = 2000
+
+--- Outcome of a `send_did_change` call. The caller can log this for
+--- diagnosability; the run should proceed in every branch.
+local DID_CHANGE = {
+  ACKED = "acked",                  -- server replied with a result
+  UNSUPPORTED = "unsupported",      -- METHOD_NOT_FOUND (older server)
+  ERROR = "error",                  -- server returned a non-NOT_FOUND error
+  TIMEOUT = "timeout",              -- no reply within DID_CHANGE_TIMEOUT_MS
+  MALFORMED = "malformed",          -- reply has neither result nor error
+}
+M.DID_CHANGE = DID_CHANGE
+
 --- Send an in-band `did_change` notice to the server for the given file
---- paths, then wait for the response. Must be called BEFORE the
+--- paths and wait (bounded) for the response. Must be called BEFORE the
 --- corresponding `run` on the same connection — that ordering is what
 --- closes the server-mode race where a `run` arriving inside the
 --- watcher's debounce window dispatches against workers whose cached
 --- `sys.modules` predates the save.
 ---
---- An older server that doesn't know `did_change` will reply with a
---- METHOD_NOT_FOUND error (code -32601); we treat that as "fall through
---- to today's FS-watcher-only behaviour" rather than failing the run.
---- Any other error is logged and also treated as a graceful fall-through
---- — we'd rather race occasionally than block the user's run.
+--- Three classes of fallback, all of which return control to the caller
+--- so the run can proceed:
+---   * METHOD_NOT_FOUND → older server; the FS-watcher path covers us
+---     eventually (with today's race).
+---   * Timeout → server never replied; we can't block the run forever
+---     even if it means racing this iteration.
+---   * Any other error or malformed payload → log + proceed.
 ---
 --- @param paths string[] absolute filesystem paths
---- @return boolean ok true if the server acknowledged, false on
----   METHOD_NOT_FOUND or other error (caller can proceed with `run`
----   either way)
+--- @return string outcome one of the `DID_CHANGE` constants — `ACKED`
+---   means the server confirmed the dirty mark; every other value means
+---   the run may race the on-disk content.
 function M.send_did_change(paths)
   local METHOD_NOT_FOUND = -32601
   local future = M.send_request("did_change", { paths = paths })
-  local resp = future.wait()
+
+  -- Bounded wait: `future.wait()` would block forever if the server
+  -- accepted the connection but never replied (slow discovery,
+  -- swallowed reply, deadlock, M.disconnect() clearing the pending
+  -- requests table). Race the wait against a sleep, exactly like
+  -- `run_complete_event` does in init.lua:470-483. nio.first returns
+  -- as soon as either branch completes.
+  local resp = nil
+  local timed_out = true
+  nio.first({
+    function()
+      resp = future.wait()
+      timed_out = false
+    end,
+    function()
+      nio.sleep(DID_CHANGE_TIMEOUT_MS)
+    end,
+  })
+
+  if timed_out then
+    log.warn("server: did_change timed out after", DID_CHANGE_TIMEOUT_MS, "ms — proceeding")
+    return DID_CHANGE.TIMEOUT
+  end
+
   if resp and resp.error then
     if resp.error.code == METHOD_NOT_FOUND then
       log.debug("server: did_change unsupported (older server), falling through")
-    else
-      log.warn("server: did_change error", resp.error.code, resp.error.message)
+      return DID_CHANGE.UNSUPPORTED
     end
-    return false
+    log.warn("server: did_change error", resp.error.code, resp.error.message)
+    return DID_CHANGE.ERROR
   end
+
+  -- A well-formed response from the server has `result` set (we expect
+  -- "ok" but accept anything truthy). Treating "no error key" as
+  -- success would let a misbehaving server claim ack with no payload.
+  if not (resp and resp.result ~= nil) then
+    log.warn("server: did_change malformed response", vim.inspect(resp))
+    return DID_CHANGE.MALFORMED
+  end
+
   log.trace("server: did_change ack", paths)
-  return true
+  return DID_CHANGE.ACKED
 end
 
 function M.ensure_server(config)
