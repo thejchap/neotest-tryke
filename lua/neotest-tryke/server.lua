@@ -273,31 +273,62 @@ function M.ensure_server(config)
 
   log.info("server: ensure_server", endpoint)
 
-  local ok = pcall(function()
-    local f = M.connect(host, port)
-    f.wait()
-    local pong = M.send_request("ping")
-    pong.wait()
-    M.disconnect()
-  end)
-
-  if ok then
-    log.info("server: reusing existing server at", endpoint)
+  -- auto_start=false: legacy "connect to a server I started elsewhere"
+  -- workflow. The plugin trusts the caller to point it at the right
+  -- server; we just verify a ping responds. (No project-identity
+  -- check; that's a known footgun documented in the README.)
+  if not config.server.auto_start then
+    local ok = pcall(function()
+      local f = M.connect(host, port)
+      f.wait()
+      local pong = M.send_request("ping")
+      pong.wait()
+      M.disconnect()
+    end)
+    if not ok then
+      M.disconnect()
+      log.error("server: not reachable at", endpoint, "and auto_start is disabled")
+      error("tryke server not reachable and auto_start is disabled")
+    end
+    log.info("server: connecting to externally-managed server at", endpoint)
     return true
   end
 
-  M.disconnect()
-
-  if not config.server.auto_start then
-    log.error("server: not reachable at", endpoint, "and auto_start is disabled")
-    error("tryke server not reachable and auto_start is disabled")
-  end
-
+  -- auto_start=true (default): the plugin owns the server lifecycle
+  -- for this nvim session. ALWAYS spawn. We never piggy-back on
+  -- whatever happens to be listening, because that's silently fatal
+  -- when the other process is a tryke server for a different project
+  -- (its `discover` returns the wrong tests, `run` filters them all
+  -- out, and you spend the session staring at "0 tests run" with no
+  -- obvious cause).
+  --
+  -- "Spawn failed" can mean: binary not on PATH, missing exec
+  -- permission, port already in use, OOM, etc. We let `vim.uv.spawn`
+  -- fail however it fails, and surface whatever stderr the spawned
+  -- process wrote before exiting (the bound-port case in particular
+  -- yields a clear "Address already in use" message from `tokio`).
   local stdout = vim.uv.new_pipe()
   local stderr = vim.uv.new_pipe()
 
   local cmd = config.tryke_command or "tryke"
   local server_args, server_env = M._build_spawn_options(config, port)
+
+  -- Collect stderr so we can include it in the error message if the
+  -- spawn fails early. Without this the user sees an unhelpful
+  -- "failed to start within timeout" and has to dig through nvim
+  -- logs (or run tryke server by hand) to find the actual cause.
+  local stderr_chunks = {}
+  stderr:read_start(function(_, data)
+    if data then
+      table.insert(stderr_chunks, data)
+    end
+  end)
+
+  -- `exit_code` is set by the on-exit callback iff the process
+  -- terminates before our ready-poll succeeds. nil = still running
+  -- (or never spawned); non-nil = exited early.
+  local exit_code = nil
+  local exit_signal = nil
 
   log.info("server: spawning", cmd, table.concat(server_args, " "))
   server_process = vim.uv.spawn(cmd, {
@@ -306,23 +337,42 @@ function M.ensure_server(config)
     stdio = { nil, stdout, stderr },
   }, function(code, signal)
     log.info("server: process exited code =", code, "signal =", signal)
+    exit_code = code
+    exit_signal = signal
     server_process = nil
   end)
 
   if not server_process then
     log.error("server: failed to spawn", cmd)
-    error("failed to spawn tryke server")
+    error(string.format("failed to spawn `%s` (is it on PATH?)", cmd))
   end
 
-  log.debug("server: spawned pid", server_process and server_process:get_pid() or "<unknown>")
+  log.debug("server: spawned pid", server_process:get_pid() or "<unknown>")
 
+  -- Poll until either the server accepts pings (success) or the
+  -- process exits without ever doing so (failure with stderr).
   local timeout = 10000
   local interval = 100
   local elapsed = 0
-
   while elapsed < timeout do
     nio.sleep(interval)
     elapsed = elapsed + interval
+
+    if exit_code ~= nil then
+      -- Process died before becoming ready. Surface its stderr — for
+      -- port-in-use that's `Address already in use (os error 48)`;
+      -- for missing python it's an import error from the runner; etc.
+      local stderr_text = table.concat(stderr_chunks)
+      log.error("server: exited before ready, code =", exit_code, "signal =", exit_signal)
+      error(
+        string.format(
+          "tryke server exited (code=%s, signal=%s) before becoming ready:\n%s",
+          tostring(exit_code),
+          tostring(exit_signal),
+          stderr_text ~= "" and stderr_text or "<no stderr captured>"
+        )
+      )
+    end
 
     local connected = pcall(function()
       local f = M.connect(host, port)
