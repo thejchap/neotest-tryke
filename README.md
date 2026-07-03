@@ -40,7 +40,7 @@ all options are optional. Defaults are shown below.
 require("neotest-tryke")({
   tryke_command = "tryke",   -- path to tryke binary
   python = nil,              -- path to python interpreter (`--python <path>`); nil = tryke default
-  mode = "direct",           -- "direct" (subprocess), "server" (persistent server), or "auto"
+  mode = "direct",           -- "direct" (subprocess) or "server" (persistent server)
   discovery = "treesitter",  -- "treesitter" (in-process) or "cli" (shell out to tryke)
   log_level = "info",        -- plugin log verbosity (this plugin's own logger)
   tryke_log_level = nil,     -- TRYKE_LOG forwarded to tryke (rust + python workers); nil = silent default
@@ -54,7 +54,7 @@ require("neotest-tryke")({
 |--------|------|---------|-------------|
 | `tryke_command` | `string` | `"tryke"` | Path to the tryke binary |
 | `python` | `string\|nil` | `nil` | Path to the Python interpreter for spawned workers, forwarded as `--python <path>`. When unset, tryke uses bare `python`/`python3` from `PATH` — usually wrong unless your venv is active in the spawning environment. Point at the workspace venv or set `[tool.tryke] python` in `pyproject.toml`. |
-| `mode` | `string` | `"direct"` | Execution mode: `"direct"` (subprocess per run), `"server"` (persistent stdio server with warm workers), or `"auto"` (prefer the server, falling back to a direct run if it can't be started) |
+| `mode` | `string` | `"direct"` | Execution mode: `"direct"` spawns a subprocess per run. `"server"` is EXPERIMENTAL - IDE communicates with Tryke over an LSP-style client/server connection. |
 | `discovery` | `string` | `"treesitter"` | Test discovery backend: `"treesitter"` (in-process, fast) or `"cli"` (delegate to `tryke test --collect-only`) |
 | `log_level` | `string\|number` | `"info"` | Plugin log verbosity (this plugin's own log file). String or numeric `vim.log.levels`. Logs go to `stdpath("log")/neotest-tryke.log`. |
 | `tryke_log_level` | `string\|nil` | `nil` | Set `TRYKE_LOG=<level>` on the spawned tryke process to surface rust runtime logs **and** python worker logs in neotest's output panel. Crank to `"info"` or `"debug"` when diagnosing a flaky worker; leave unset for normal runs. |
@@ -64,7 +64,9 @@ require("neotest-tryke")({
 
 ### server mode
 
-In `mode = "server"` the plugin spawns `tryke server` once per nvim session and talks newline-delimited JSON-RPC over the child process's stdin/stdout (LSP-style). There is no TCP endpoint anymore — tryke removed the `--port` flag and its listener — so there's nothing to configure: the plugin owns the server's lifecycle end to end. The process is reused across runs (that's where the warm-worker speedup comes from) and shut down on nvim exit by closing its stdin, which the server treats as its EOF shutdown signal. Because the transport is the spawned process itself, attaching to an externally started server is no longer possible; the old `server.host` / `server.port` / `server.auto_start` / `server.auto_stop` options are gone and are ignored if passed.
+EXPERIMENTAL - IDE communicates with Tryke over an LSP-style client/server connection.
+
+In `mode = "server"` the plugin spawns `tryke server` once per nvim session and talks newline-delimited JSON-RPC over the child process's stdin/stdout. There is no TCP endpoint anymore — tryke removed the `--port` flag and its listener — so there's nothing to configure: the plugin owns the server's lifecycle end to end. The process is reused across runs (that's where the warm-worker speedup comes from) and shut down on nvim exit by closing its stdin, which the server treats as its EOF shutdown signal. Because the transport is the spawned process itself, attaching to an externally started server is no longer possible; the old `server.host` / `server.port` / `server.auto_start` / `server.auto_stop` options are gone and are ignored if passed.
 
 ### logging
 
