@@ -103,6 +103,9 @@ function M.send_request(method, params)
   local future = nio.control.future()
   pending_requests[id] = future
 
+  -- `M.is_running()` above already guarantees `stdin_pipe` is a live,
+  -- writable pipe, but lua-ls can't see that through the helper.
+  ---@diagnostic disable-next-line: need-check-nil, undefined-field
   stdin_pipe:write(message)
 
   return future, id
