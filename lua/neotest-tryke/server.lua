@@ -43,16 +43,41 @@ end
 --- the child's stdout is the *only* way replies come back, so once it's
 --- gone every in-flight request is unanswerable and any future one would
 --- hang (`is_running()` would still say true because the process handle
---- and stdin are intact). Fail the pending futures right away so waiters
---- unblock, then reap the process — but defer that to the main loop:
---- this runs inside a libuv read callback (fast event context) where
---- `stop_server`'s bounded waits are illegal, and deferring also lets a
---- clean EOF→exit sequence settle so `stop_server` is a harmless no-op
---- rather than an eager SIGKILL. The next run's `ensure_server` respawns.
-local function on_transport_lost(reason)
+--- and stdin are intact).
+---
+--- Fail the pending futures right away, and — when this is still the
+--- active process — mark the session down *synchronously* (nil the
+--- handle, close stdin) so a `send_request` landing between now and the
+--- deferred reap errors cleanly instead of writing into a dead stdout.
+--- Closing stdin also doubles as the graceful stop nudge (EOF).
+---
+--- Then reap the *specific* process this fired for, deferred to the main
+--- loop (this runs in a libuv read callback / fast event context where
+--- `stop_server`'s bounded waits are illegal). Crucially we capture
+--- `handle` and never touch the module-global `server_process` in the
+--- deferred part: by the time it runs, the next run may already have
+--- respawned a *new* server, and an unconditional `stop_server()` would
+--- tear that one down. The dead process's own exit callback closes its
+--- pipes/handle; the deferred SIGTERM only covers a process that ignored
+--- the stdin EOF above.
+local function on_transport_lost(reason, handle)
   fail_pending(reason)
+
+  if server_process == handle then
+    server_process = nil
+    if stdin_pipe and not stdin_pipe:is_closing() then
+      stdin_pipe:close()
+    end
+    stdin_pipe = nil
+    read_buffer = ""
+  end
+
   vim.schedule(function()
-    M.stop_server()
+    if handle and not handle:is_closing() then
+      pcall(function()
+        handle:kill("sigterm")
+      end)
+    end
   end)
 end
 
@@ -434,7 +459,7 @@ function M.ensure_server(config)
     end
     if read_err then
       log.warn("server: stdout read error — treating transport as lost:", read_err)
-      on_transport_lost("tryke server stdout read error: " .. tostring(read_err))
+      on_transport_lost("tryke server stdout read error: " .. tostring(read_err), own_handle)
       return
     end
     if not data then
@@ -443,7 +468,7 @@ function M.ensure_server(config)
       -- replies can arrive on this pipe, so fail pending waiters and make
       -- sure the process gets torn down either way.
       log.debug("server: stdout EOF — transport closed")
-      on_transport_lost("tryke server closed stdout")
+      on_transport_lost("tryke server closed stdout", own_handle)
       return
     end
     M._on_data(data)
