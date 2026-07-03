@@ -58,8 +58,14 @@ end
 --- deferred part: by the time it runs, the next run may already have
 --- respawned a *new* server, and an unconditional `stop_server()` would
 --- tear that one down. The dead process's own exit callback closes its
---- pipes/handle; the deferred SIGTERM only covers a process that ignored
---- the stdin EOF above.
+--- pipes/handle; the deferred SIGTERM (then SIGKILL) only bites a process
+--- that ignored the stdin EOF above.
+---
+--- How long to wait after the SIGTERM before forcing SIGKILL. Same
+--- magnitude as `stop_server`'s SIGTERM grace (STOP_SIGTERM_WAIT_MS), but
+--- defined here because that constant isn't in lexical scope this early.
+local ON_TRANSPORT_LOST_SIGKILL_MS = 1000
+
 local function on_transport_lost(reason, handle)
   fail_pending(reason)
 
@@ -79,6 +85,21 @@ local function on_transport_lost(reason, handle)
       end)
     end
   end)
+
+  -- SIGKILL escalation: a process that ignored both the stdin EOF and the
+  -- SIGTERM above would otherwise linger as a stray tryke server (holding
+  -- its worker pool). `server_process` is already nilled, so `stop_server`
+  -- won't cover this handle — escalate on the captured handle directly. A
+  -- process that already exited has a closing handle by now, so this
+  -- no-ops for the common case.
+  vim.defer_fn(function()
+    if handle and not handle:is_closing() then
+      log.warn("server: lost-transport process ignored SIGTERM — sending SIGKILL")
+      pcall(function()
+        handle:kill("sigkill")
+      end)
+    end
+  end, ON_TRANSPORT_LOST_SIGKILL_MS)
 end
 
 --- Build the `args` array and `env` table passed to `vim.uv.spawn` for the
