@@ -41,6 +41,24 @@ local function fail_pending(reason)
   end
 end
 
+--- React to the readable half of the transport dying: a stdout read
+--- error, or EOF while the process is somehow still around. With stdio
+--- the child's stdout is the *only* way replies come back, so once it's
+--- gone every in-flight request is unanswerable and any future one would
+--- hang (`is_running()` would still say true because the process handle
+--- and stdin are intact). Fail the pending futures right away so waiters
+--- unblock, then reap the process — but defer that to the main loop:
+--- this runs inside a libuv read callback (fast event context) where
+--- `stop_server`'s bounded waits are illegal, and deferring also lets a
+--- clean EOF→exit sequence settle so `stop_server` is a harmless no-op
+--- rather than an eager SIGKILL. The next run's `ensure_server` respawns.
+local function on_transport_lost(reason)
+  fail_pending(reason)
+  vim.schedule(function()
+    M.stop_server()
+  end)
+end
+
 --- Build the `args` array and `env` table passed to `vim.uv.spawn` for the
 --- tryke server child. Pure: no side effects, easy to unit-test.
 ---
@@ -402,14 +420,20 @@ function M.ensure_server(config)
 
   stdout:read_start(function(read_err, data)
     if read_err then
-      log.warn("server: stdout read error —", read_err)
+      log.warn("server: stdout read error — treating transport as lost:", read_err)
+      on_transport_lost("tryke server stdout read error: " .. tostring(read_err))
       return
     end
-    if data then
-      M._on_data(data)
+    if not data then
+      -- EOF: the server closed stdout. Usually it's on its way out and
+      -- the exit callback reaps it, but don't depend on that — no further
+      -- replies can arrive on this pipe, so fail pending waiters and make
+      -- sure the process gets torn down either way.
+      log.debug("server: stdout EOF — transport closed")
+      on_transport_lost("tryke server closed stdout")
+      return
     end
-    -- data == nil is EOF: the server closed stdout, which only happens
-    -- on its way out — the exit callback owns the cleanup.
+    M._on_data(data)
   end)
 
   -- Collect stderr so we can include it in the error message if the
