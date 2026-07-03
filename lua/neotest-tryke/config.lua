@@ -46,7 +46,11 @@ local defaults = {
 }
 
 function M.get(user_opts)
-  return vim.tbl_deep_extend("force", defaults, user_opts or {})
+  local config = vim.tbl_deep_extend("force", defaults, user_opts or {})
+  if config.mode ~= "server" then
+    config.mode = "direct"
+  end
+  return config
 end
 
 return M

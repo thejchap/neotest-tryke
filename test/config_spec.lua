@@ -25,6 +25,11 @@ describe("config.get", function()
 		assert.equal("tryke", cfg.tryke_command)
 	end)
 
+	it("falls back to direct for the removed auto mode", function()
+		local cfg = config.get({ mode = "auto" })
+		assert.equal("direct", cfg.mode)
+	end)
+
 	it("tolerates a legacy `server` table without merging defaults into it", function()
 		-- Users upgrading from the TCP transport may still pass
 		-- `server = {...}`; it must merge cleanly (and get ignored by the

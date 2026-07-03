@@ -598,30 +598,7 @@ function adapter.build_spec(args)
     "position =",
     position and (position.type .. " " .. position.id) or "<unknown>"
   )
-  local use_server = false
-
   if cfg.mode == "server" then
-    use_server = true
-  elseif cfg.mode == "auto" then
-    -- There's no external server to probe anymore (tryke PR #148 removed
-    -- the TCP listener) — the only server this plugin can reach is the
-    -- one it spawns itself. So "auto" now means: prefer server mode, but
-    -- fall back to a direct subprocess run if the server can't be brought
-    -- up (binary missing, spawn failure, ready-timeout). Reuse a server
-    -- already up this session rather than paying the spawn cost again;
-    -- the strategy re-verifies it with a bounded ping.
-    if server.is_running() then
-      use_server = true
-    else
-      local ok, err = pcall(server.ensure_server, cfg)
-      use_server = ok
-      if not ok then
-        log.warn("server: auto mode falling back to direct —", tostring(err))
-      end
-    end
-  end
-
-  if use_server then
     return build_server_spec(args)
   end
 
