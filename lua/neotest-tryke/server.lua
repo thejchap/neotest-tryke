@@ -14,9 +14,6 @@ local request_id = 0
 local server_process = nil
 local stdin_pipe = nil
 local read_buffer = ""
--- Rolling stderr capture for the current server process, so spawn-time
--- failures can surface the actual cause instead of a bare timeout.
-local stderr_chunks = {}
 
 --- True when the session's server process is alive AND its stdin is
 --- still writable — i.e. we can send requests right now.
@@ -314,7 +311,10 @@ local function probe_alive(timeout_ms)
 
   -- pcall: a failed future (process exited mid-probe) means dead. Any
   -- successful reply — even a JSON-RPC error — is liveness evidence.
-  return (pcall(future.wait))
+  -- Bind to one local so the contract is strictly `boolean` (a bare
+  -- `return pcall(...)` would leak the reply value to callers).
+  local alive = pcall(future.wait)
+  return alive
 end
 
 function M.ensure_server(config)
@@ -354,7 +354,11 @@ function M.ensure_server(config)
   local cmd = config.tryke_command or "tryke"
   local server_args, server_env = M._build_spawn_options(config)
 
-  stderr_chunks = {}
+  -- Per-spawn, captured only by this process's stderr callback and read
+  -- only by this invocation's ready-poll. A module global would let a
+  -- slow-to-reap predecessor's late stderr bleed into the next session's
+  -- failure message.
+  local stderr_chunks = {}
   read_buffer = ""
 
   -- `exit_code` is set by the on-exit callback iff the process
@@ -419,6 +423,15 @@ function M.ensure_server(config)
   log.debug("server: spawned pid", server_process:get_pid() or "<unknown>")
 
   stdout:read_start(function(read_err, data)
+    -- Ignore output from a process that is no longer the current server.
+    -- If `stop_server` timed out and we respawned, a slow-to-reap
+    -- predecessor can still deliver bytes here; acting on them would
+    -- corrupt the new session's `read_buffer`, resolve its pending
+    -- requests against stale replies, or (via `on_transport_lost`) fail
+    -- its requests and kill the new server we just started.
+    if server_process ~= own_handle then
+      return
+    end
     if read_err then
       log.warn("server: stdout read error — treating transport as lost:", read_err)
       on_transport_lost("tryke server stdout read error: " .. tostring(read_err))
@@ -441,6 +454,10 @@ function M.ensure_server(config)
   -- "failed to start within timeout" and has to dig through nvim
   -- logs (or run tryke server by hand) to find the actual cause.
   stderr:read_start(function(_, data)
+    -- No `own_handle` guard needed: `stderr_chunks` is this spawn's local,
+    -- so a predecessor's callback appends to *its* table, not ours — and
+    -- guarding on `server_process` would risk dropping this process's last
+    -- stderr chunk if it arrives just after the exit callback nils it.
     if data then
       table.insert(stderr_chunks, data)
     end
