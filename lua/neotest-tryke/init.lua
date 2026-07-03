@@ -496,12 +496,16 @@ local function build_server_spec(args)
         params.tests = test_ids
       end
       log.debug("server: sending run", run_id, "with", #test_ids, "test id(s)")
-      local response_future = server.send_request("run", params)
 
-      -- pcall: if the server process dies mid-run, the transport fails
-      -- the pending future (there is no reconnect in the stdio model).
-      -- Treat that as a failed run instead of crashing the strategy.
-      local run_ok, response = pcall(response_future.wait)
+      -- pcall both the send and the wait: `send_request` errors
+      -- synchronously if the server died between `ensure_server` and here
+      -- (the stdio transport has no reconnect), and the pending future is
+      -- failed if it dies mid-run. Treat either as a failed run instead of
+      -- letting the error abort the strategy.
+      local run_ok, response = pcall(function()
+        local response_future = server.send_request("run", params)
+        return response_future.wait()
+      end)
       if not run_ok then
         log.error("server: run failed —", tostring(response))
         response = nil
