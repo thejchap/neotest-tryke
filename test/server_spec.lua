@@ -16,10 +16,10 @@ describe("server._build_spawn_options", function()
     end
   end
 
-  it("emits `server --port <port>` for a default config", function()
+  it("emits a bare `server` for a default config — stdio transport has no --port", function()
     local cfg = { tryke_command = "tryke" }
-    local args, env = server._build_spawn_options(cfg, 2337)
-    assert.same({ "server", "--port", "2337" }, args)
+    local args, env = server._build_spawn_options(cfg)
+    assert.same({ "server" }, args)
     -- No log level → no env override → libuv inherits parent env.
     assert.is_nil(env)
   end)
@@ -28,17 +28,14 @@ describe("server._build_spawn_options", function()
     -- Order matters: tryke parses positional args in order, so `--python`
     -- must come after the subcommand but before any positional paths.
     local cfg = { tryke_command = "tryke", python = "/repo/.venv/bin/python3" }
-    local args = server._build_spawn_options(cfg, 2337)
-    assert.same(
-      { "server", "--port", "2337", "--python", "/repo/.venv/bin/python3" },
-      args
-    )
+    local args = server._build_spawn_options(cfg)
+    assert.same({ "server", "--python", "/repo/.venv/bin/python3" }, args)
   end)
 
   it("splices parent env and appends TRYKE_LOG when tryke_log_level is set", function()
     with_os_environ({ PATH = "/usr/bin", HOME = "/home/u" }, function()
       local cfg = { tryke_command = "tryke", tryke_log_level = "info" }
-      local _, env = server._build_spawn_options(cfg, 2337)
+      local _, env = server._build_spawn_options(cfg)
       assert.is_table(env)
       -- libuv expects an array of `K=V` strings, NOT a `{ KEY = VAL }` map.
       -- Sort before comparing — `pairs` ordering on the spliced parent env
@@ -57,7 +54,7 @@ describe("server._build_spawn_options", function()
     -- give the child *no* env (no PATH, no HOME) and break the spawn.
     with_os_environ({ PATH = "/usr/bin" }, function()
       local cfg = { tryke_command = "tryke" }
-      local _, env = server._build_spawn_options(cfg, 2337)
+      local _, env = server._build_spawn_options(cfg)
       assert.is_nil(env)
     end)
   end)
@@ -69,13 +66,27 @@ describe("server._build_spawn_options", function()
         python = "/repo/.venv/bin/python3",
         tryke_log_level = "debug",
       }
-      local args, env = server._build_spawn_options(cfg, 9000)
-      assert.same(
-        { "server", "--port", "9000", "--python", "/repo/.venv/bin/python3" },
-        args
-      )
+      local args, env = server._build_spawn_options(cfg)
+      assert.same({ "server", "--python", "/repo/.venv/bin/python3" }, args)
       table.sort(env)
       assert.same({ "PATH=/usr/bin", "TRYKE_LOG=debug" }, env)
     end)
+  end)
+end)
+
+describe("server.is_running", function()
+  it("is false before any server has been spawned", function()
+    -- With the stdio transport the child process IS the connection;
+    -- callers must be able to cheaply check for one before sending.
+    assert.is_false(server.is_running())
+  end)
+
+  it("send_request errors instead of writing into the void", function()
+    -- The old TCP code wrote to a module-global socket handle and
+    -- crashed with a nil-index if nothing had connected. The stdio
+    -- transport makes the precondition explicit.
+    local ok, err = pcall(server.send_request, "ping")
+    assert.is_false(ok)
+    assert.matches("not running", tostring(err))
   end)
 end)

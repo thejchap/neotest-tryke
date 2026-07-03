@@ -35,12 +35,12 @@ local defaults = {
   -- "info" or "debug" when diagnosing a flaky worker.
   tryke_log_level = nil,
   args = {},
-  server = {
-    port = 2337,
-    host = "127.0.0.1",
-    auto_start = true,
-    auto_stop = true,
-  },
+  -- No `server` table anymore: tryke's server speaks stdio to the
+  -- process that spawned it (tryke PR #148 removed the TCP listener and
+  -- `--port`), so there is no host/port to configure, no external server
+  -- to attach to (`auto_start`), and no way for it to outlive nvim
+  -- (`auto_stop`) — stdin EOF at exit is its shutdown signal. Any
+  -- `server = {...}` a user still passes is merged in and ignored.
   workers = nil,
   fail_fast = false,
 }
