@@ -516,9 +516,21 @@ function M.ensure_server(config)
       )
     end
 
-    if ready_future.is_set() and pcall(ready_future.wait) then
-      log.info("server: ready after", elapsed, "ms")
-      return true
+    if ready_future.is_set() then
+      -- Set means either a reply arrived (ready) OR the transport failed
+      -- the future — `on_transport_lost` (stdout EOF/read error) or the
+      -- exit callback both call `fail_pending`. A successful wait is the
+      -- ready signal; a failed one means startup died, so abort now with
+      -- the underlying reason instead of sleeping out the full timeout and
+      -- reporting a misleading "failed to start within timeout".
+      local ok, err = pcall(ready_future.wait)
+      if ok then
+        log.info("server: ready after", elapsed, "ms")
+        return true
+      end
+      log.error("server: transport failed during startup —", tostring(err))
+      M.stop_server()
+      error("tryke server transport failed during startup: " .. tostring(err))
     end
   end
 
