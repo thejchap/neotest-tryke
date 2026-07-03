@@ -47,12 +47,6 @@ require("neotest-tryke")({
   args = {},                 -- extra CLI arguments passed to tryke
   workers = nil,             -- number of parallel workers (nil = tryke default)
   fail_fast = false,         -- stop on first failure
-  server = {
-    port = 2337,             -- tryke server port
-    host = "127.0.0.1",      -- tryke server host
-    auto_start = true,       -- start server automatically if not running
-    auto_stop = true,        -- stop server on VimLeavePre
-  },
 })
 ```
 
@@ -60,17 +54,17 @@ require("neotest-tryke")({
 |--------|------|---------|-------------|
 | `tryke_command` | `string` | `"tryke"` | Path to the tryke binary |
 | `python` | `string\|nil` | `nil` | Path to the Python interpreter for spawned workers, forwarded as `--python <path>`. When unset, tryke uses bare `python`/`python3` from `PATH` — usually wrong unless your venv is active in the spawning environment. Point at the workspace venv or set `[tool.tryke] python` in `pyproject.toml`. |
-| `mode` | `string` | `"direct"` | Execution mode: `"direct"`, `"server"`, or `"auto"` |
+| `mode` | `string` | `"direct"` | Execution mode: `"direct"` (subprocess per run), `"server"` (persistent stdio server with warm workers), or `"auto"` (prefer the server, falling back to a direct run if it can't be started) |
 | `discovery` | `string` | `"treesitter"` | Test discovery backend: `"treesitter"` (in-process, fast) or `"cli"` (delegate to `tryke test --collect-only`) |
 | `log_level` | `string\|number` | `"info"` | Plugin log verbosity (this plugin's own log file). String or numeric `vim.log.levels`. Logs go to `stdpath("log")/neotest-tryke.log`. |
 | `tryke_log_level` | `string\|nil` | `nil` | Set `TRYKE_LOG=<level>` on the spawned tryke process to surface rust runtime logs **and** python worker logs in neotest's output panel. Crank to `"info"` or `"debug"` when diagnosing a flaky worker; leave unset for normal runs. |
 | `args` | `string[]` | `{}` | Extra CLI arguments passed to tryke |
 | `workers` | `number\|nil` | `nil` | Number of parallel workers |
 | `fail_fast` | `boolean` | `false` | Stop on first failure |
-| `server.port` | `number` | `2337` | Server port |
-| `server.host` | `string` | `"127.0.0.1"` | Server host |
-| `server.auto_start` | `boolean` | `true` | Auto-start server if not running |
-| `server.auto_stop` | `boolean` | `true` | Auto-stop server on exit |
+
+### server mode
+
+In `mode = "server"` the plugin spawns `tryke server` once per nvim session and talks newline-delimited JSON-RPC over the child process's stdin/stdout (LSP-style). There is no TCP endpoint anymore — tryke removed the `--port` flag and its listener — so there's nothing to configure: the plugin owns the server's lifecycle end to end. The process is reused across runs (that's where the warm-worker speedup comes from) and shut down on nvim exit by closing its stdin, which the server treats as its EOF shutdown signal. Because the transport is the spawned process itself, attaching to an externally started server is no longer possible; the old `server.host` / `server.port` / `server.auto_start` / `server.auto_stop` options are gone and are ignored if passed.
 
 ### logging
 
@@ -86,7 +80,7 @@ Tail it while diagnosing a failing run:
 tail -F ~/.local/state/nvim/log/neotest-tryke.log
 ```
 
-If neotest says "the test run did not record any output" or every test is getting reported as failed/skipped, `log_level = "trace"` is the fastest path to seeing whether it's an id-format drift, a tryke binary issue, or a stale server on the port.
+If neotest says "the test run did not record any output" or every test is getting reported as failed/skipped, `log_level = "trace"` is the fastest path to seeing whether it's an id-format drift, a tryke binary issue, or a wedged server process.
 
 ### discovery mode
 

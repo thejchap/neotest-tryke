@@ -267,9 +267,9 @@ end)
 
 describe("collect_test_file_paths", function()
   -- Sent to the server via `did_change` BEFORE `run` so it can mark the
-  -- worker pool dirty and refresh discovery on the same TCP connection.
+  -- worker pool dirty and refresh discovery on the same stdio session.
   -- The ordering matters because the server reads requests serially per
-  -- connection; the contents matter because the server uses the paths
+  -- session; the contents matter because the server uses the paths
   -- both for `affected_modules` and as a defence-in-depth project-root
   -- filter. Tests below exercise the three branches the helper has:
   -- single test position, tree iteration over multiple tests, and

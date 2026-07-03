@@ -328,7 +328,7 @@ end
 --- Unique absolute paths of every test file in this run. Sent to the
 --- server via `did_change` immediately before `run` so the server can
 --- mark the worker pool dirty (and refresh discovery for these files)
---- synchronously on the same TCP connection. Without this, a `run` that
+--- synchronously on the same stdio session. Without this, a `run` that
 --- arrives inside the FS watcher's 50ms debounce can dispatch against
 --- workers whose `sys.modules` cache predates the just-completed save —
 --- the user perceives flaky test outcomes that disagree with the buffer.
@@ -376,17 +376,18 @@ local function build_server_spec(args)
       results_path = output_file,
     },
     strategy = function()
+      -- Spawning (or reusing) the stdio server IS the connection: the
+      -- transport is the child process's stdin/stdout, so there is no
+      -- separate connect step (tryke PR #148 removed the TCP listener).
       server.ensure_server(cfg)
-
-      local connect_future = server.connect(cfg.server.host, cfg.server.port)
-      connect_future.wait()
 
       local output_lines = {}
       local streamed_results = {}
 
       -- Server broadcasts every run's notifications on a shared channel;
-      -- drop anything tagged with a *different* run_id so a concurrent
-      -- client (or a watcher rediscovery) can't pollute our results.
+      -- drop anything tagged with a *different* run_id so a stale
+      -- notification (the stdio session outlives each run) or a watcher
+      -- rediscovery can't pollute our results.
       -- Notifications without a run_id (pre-0.0.19 servers predate PR #54)
       -- are accepted — this mirrors the tryke CLI's own client filter.
       local function for_this_run(msg)
@@ -444,9 +445,9 @@ local function build_server_spec(args)
       end)
 
       -- In-band signal: tell the server which files we just touched
-      -- BEFORE sending the run, on the same TCP connection. The server's
+      -- BEFORE sending the run, on the same stdio session. The server's
       -- ConnectionHandler reads + handles requests serially per
-      -- connection, so by the time `run` is read the `did_change`
+      -- session, so by the time `run` is read the `did_change`
       -- handler has already flipped the worker pool's dirty flag — the
       -- subsequent `execute_run` is guaranteed to restart workers
       -- before dispatch, eliminating the race where a worker serves a
@@ -463,16 +464,15 @@ local function build_server_spec(args)
           log.warn("server: did_change outcome =", outcome, "— run may race recent file changes")
         end
         -- If `did_change` timed out, the server is still processing it
-        -- on this socket's read loop. Sending `run` on the same socket
-        -- would queue behind that processing and `response_future.wait()`
+        -- on its session read loop. Sending `run` behind it would queue
+        -- on the same in-order stdio channel and `response_future.wait()`
         -- below is unbounded — best case it eventually unblocks, worst
-        -- case it never does. Drop the socket and reconnect so the run
-        -- lands on a fresh ConnectionHandler the server can dispatch in
-        -- parallel.
+        -- case it never does. Unlike TCP there is no second connection
+        -- to escape to, so restart the server and let the run land on a
+        -- fresh session.
         if outcome == server.DID_CHANGE.TIMEOUT then
-          server.disconnect()
-          local reconnect = server.connect(cfg.server.host, cfg.server.port)
-          reconnect.wait()
+          server.stop_server()
+          server.ensure_server(cfg)
         end
         -- Older server doesn't know `did_change`. Without it, the
         -- server's `disc.tests()` cache is whatever its FS watcher last
@@ -498,13 +498,22 @@ local function build_server_spec(args)
       log.debug("server: sending run", run_id, "with", #test_ids, "test id(s)")
       local response_future = server.send_request("run", params)
 
-      local response = response_future.wait()
+      -- pcall: if the server process dies mid-run, the transport fails
+      -- the pending future (there is no reconnect in the stdio model).
+      -- Treat that as a failed run instead of crashing the strategy.
+      local run_ok, response = pcall(response_future.wait)
+      if not run_ok then
+        log.error("server: run failed —", tostring(response))
+        response = nil
+      end
 
       -- Bounded wait so a server that crashes before emitting
       -- `run_complete` can't hang the run forever; the response is
       -- already in hand, so the worst case is a missing per-test
       -- outcome that gets reported as "skipped: not run" downstream.
-      if not run_complete_event.is_set() then
+      -- Skip it entirely when the transport already died — the
+      -- notification can never arrive.
+      if run_ok and not run_complete_event.is_set() then
         nio.first({
           function()
             run_complete_event.wait()
@@ -532,9 +541,14 @@ local function build_server_spec(args)
       elseif response and response.error then
         log.error("server: run rpc error:", response.error.message)
         exit_code = 1
+      elseif not run_ok then
+        exit_code = 1
       end
 
-      server.disconnect()
+      -- No per-run teardown: the stdio session is the server's lifetime,
+      -- so "disconnecting" would kill the warm worker pool that server
+      -- mode exists to keep. The process is reused by the next run and
+      -- stopped on VimLeavePre.
 
       return {
         output = function()
@@ -548,7 +562,10 @@ local function build_server_spec(args)
         end,
         attach = function() end,
         stop = function()
-          server.disconnect()
+          -- The only way to abort an in-flight run on a stdio session is
+          -- to kill the server — there's no side channel to send a
+          -- cancel on. `ensure_server` respawns it for the next run.
+          server.stop_server()
         end,
         output_stream = function()
           local done = false
@@ -582,17 +599,22 @@ function adapter.build_spec(args)
   if cfg.mode == "server" then
     use_server = true
   elseif cfg.mode == "auto" then
-    local ok = pcall(function()
-      local f = server.connect(cfg.server.host, cfg.server.port)
-      f.wait()
-      local pong = server.send_request("ping")
-      pong.wait()
-      server.disconnect()
-    end)
-    if not ok then
-      server.disconnect()
+    -- There's no external server to probe anymore (tryke PR #148 removed
+    -- the TCP listener) — the only server this plugin can reach is the
+    -- one it spawns itself. So "auto" now means: prefer server mode, but
+    -- fall back to a direct subprocess run if the server can't be brought
+    -- up (binary missing, spawn failure, ready-timeout). Reuse a server
+    -- already up this session rather than paying the spawn cost again;
+    -- the strategy re-verifies it with a bounded ping.
+    if server.is_running() then
+      use_server = true
+    else
+      local ok, err = pcall(server.ensure_server, cfg)
+      use_server = ok
+      if not ok then
+        log.warn("server: auto mode falling back to direct —", tostring(err))
+      end
     end
-    use_server = ok
   end
 
   if use_server then

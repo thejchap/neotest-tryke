@@ -3,39 +3,61 @@ local log = require("neotest-tryke.logger")
 
 local M = {}
 
-local handle = nil
+-- The tryke server speaks newline-delimited JSON-RPC 2.0 over the spawned
+-- process's stdin/stdout, LSP-style (tryke PR #148 removed the TCP
+-- listener and the `--port` flag). The transport IS the child process:
+-- spawning it opens the session, and closing its stdin delivers EOF —
+-- the server's clean-shutdown signal.
 local pending_requests = {}
 local notification_handlers = {}
 local request_id = 0
 local server_process = nil
+local stdin_pipe = nil
 local read_buffer = ""
--- Captured at the most recent `ensure_server` call so the VimLeavePre
--- autocmd can honour `server.auto_stop` (the config object isn't in
--- scope from the autocmd otherwise, and the docs promise the flag is
--- respected — without this, `auto_stop = false` was a silent no-op).
-local last_config = nil
+-- Rolling stderr capture for the current server process, so spawn-time
+-- failures can surface the actual cause instead of a bare timeout.
+local stderr_chunks = {}
 
-function M.is_connected()
-  return handle ~= nil and not handle:is_closing()
+--- True when the session's server process is alive AND its stdin is
+--- still writable — i.e. we can send requests right now.
+function M.is_running()
+  return server_process ~= nil
+    and not server_process:is_closing()
+    and stdin_pipe ~= nil
+    and not stdin_pipe:is_closing()
+end
+
+--- Resolve every in-flight request future with an error. Called when the
+--- transport dies (process exit or explicit stop): with stdio there is no
+--- reconnect, so a pending reply can never arrive — leaving the futures
+--- unset would hang any coroutine still waiting on them.
+local function fail_pending(reason)
+  local pending = pending_requests
+  pending_requests = {}
+  for _, future in pairs(pending) do
+    if not future.is_set() then
+      future.set_error(reason)
+    end
+  end
 end
 
 --- Build the `args` array and `env` table passed to `vim.uv.spawn` for the
 --- tryke server child. Pure: no side effects, easy to unit-test.
 ---
 --- Returns `(args, env)`:
----  * `args`: positional arguments for `tryke server`. Always carries
----    `server --port <port>`; appends `--python <path>` when set.
+---  * `args`: positional arguments for `tryke server`. The stdio server
+---    takes no `--port` (removed in tryke PR #148); appends
+---    `--python <path>` when set.
 ---  * `env`: nil when no env override is needed (libuv inherits the parent
 ---    env in that case). Otherwise an array of `"KEY=VALUE"` strings —
 ---    libuv resets the env when `env` is provided, so we have to splice
 ---    the parent env ourselves before adding `TRYKE_LOG`.
 ---
 ---@param config table  the resolved adapter config table
----@param port number   the server port to bind
 ---@return string[] args
 ---@return string[]|nil env
-function M._build_spawn_options(config, port)
-  local args = { "server", "--port", tostring(port) }
+function M._build_spawn_options(config)
+  local args = { "server" }
   if config.python then
     table.insert(args, "--python")
     table.insert(args, config.python)
@@ -53,68 +75,19 @@ function M._build_spawn_options(config, port)
   return args, env
 end
 
-function M.connect(host, port)
-  local endpoint = host .. ":" .. tostring(port)
-  log.debug("server: connect", endpoint)
-
-  -- Close any handle from a prior connection that wasn't explicitly
-  -- disconnected (e.g. an error path that returned before its final
-  -- `M.disconnect()`). Without this, assigning the module-global
-  -- `handle` below leaks the previous socket FD, and any unread
-  -- notifications buffered on it could interfere with the new
-  -- session. This is purely defensive — normal flows always
-  -- disconnect in their cleanup branch — but cheap and idempotent.
-  M.disconnect()
-
-  local future = nio.control.future()
-
-  handle = vim.uv.new_tcp()
-  read_buffer = ""
-
-  vim.uv.tcp_connect(handle, host, port, function(err)
-    if err then
-      log.debug("server: connect failed", endpoint, "—", err)
-      handle:close()
-      handle = nil
-      future.set_error(err)
-      return
-    end
-
-    handle:read_start(function(read_err, data)
-      if read_err then
-        log.warn("server: read error on", endpoint, "—", read_err)
-        M.disconnect()
-        return
-      end
-      if data then
-        M._on_data(data)
-      end
-    end)
-
-    log.debug("server: connected", endpoint)
-    future.set(true)
-  end)
-
-  return future
-end
-
-function M.disconnect()
-  if handle and not handle:is_closing() then
-    handle:read_stop()
-    handle:close()
-  end
-  handle = nil
-  read_buffer = ""
-  pending_requests = {}
-end
-
 --- Send a JSON-RPC request and return the future that resolves when the
 --- server replies. The future is keyed by id in `pending_requests`; if
 --- the caller gives up on the wait it should call `M.cancel_request(id)`
---- (or `M.disconnect()`, which clears the whole table) to avoid leaking
---- an orphaned entry that a late server reply would silently resolve.
+--- to avoid leaking an orphaned entry that a late server reply would
+--- silently resolve. Errors if the server isn't running — with stdio
+--- there is no separate "connect" step to have forgotten; a dead server
+--- means `ensure_server` must run first.
 --- Returns `(future, id)`.
 function M.send_request(method, params)
+  if not M.is_running() then
+    error("tryke server is not running")
+  end
+
   request_id = request_id + 1
   local id = request_id
 
@@ -130,8 +103,7 @@ function M.send_request(method, params)
   local future = nio.control.future()
   pending_requests[id] = future
 
-  ---@diagnostic disable-next-line: need-check-nil, undefined-field
-  handle:write(message)
+  stdin_pipe:write(message)
 
   return future, id
 end
@@ -140,7 +112,7 @@ end
 --- about. Safe to call for an already-resolved id (no-op). Used by
 --- bounded waits (e.g. `send_did_change` on TIMEOUT) so a late server
 --- reply doesn't resolve a future no one is awaiting; without this the
---- entry survives until `M.disconnect()`.
+--- entry survives until the transport dies.
 function M.cancel_request(id)
   pending_requests[id] = nil
 end
@@ -181,7 +153,7 @@ end
 
 --- How long to wait for a `did_change` ack before giving up and
 --- proceeding to `run`. Intentionally the same magnitude as the
---- `run_complete` bound at init.lua:486 — both protect against the same
+--- `run_complete` bound in init.lua — both protect against the same
 --- failure mode (a server task wedged with neither response nor
 --- progress). If you tune one, look at the other.
 local DID_CHANGE_TIMEOUT_MS = 2000
@@ -191,7 +163,7 @@ local DID_CHANGE_TIMEOUT_MS = 2000
 local DID_CHANGE = {
   ACKED = "acked", -- server replied with a result
   UNSUPPORTED = "unsupported", -- METHOD_NOT_FOUND (older server)
-  ERROR = "error", -- server returned a non-NOT_FOUND error
+  ERROR = "error", -- server returned a non-NOT_FOUND error (or the transport died)
   TIMEOUT = "timeout", -- no reply within DID_CHANGE_TIMEOUT_MS
   MALFORMED = "malformed", -- reply has neither result nor error
 }
@@ -199,7 +171,7 @@ M.DID_CHANGE = DID_CHANGE
 
 --- Send an in-band `did_change` notice to the server for the given file
 --- paths and wait (bounded) for the response. Must be called BEFORE the
---- corresponding `run` on the same connection — that ordering is what
+--- corresponding `run` on the same stdio session — that ordering is what
 --- closes the server-mode race where a `run` arriving inside the
 --- watcher's debounce window dispatches against workers whose cached
 --- `sys.modules` predates the save.
@@ -221,20 +193,27 @@ function M.send_did_change(paths)
   local future, id = M.send_request("did_change", { paths = paths })
 
   -- Bounded wait: `future.wait()` would block forever if the server
-  -- accepted the connection but never replied (slow discovery,
-  -- swallowed reply, deadlock, M.disconnect() clearing the pending
-  -- requests table). Race the wait against a sleep, exactly like
-  -- `run_complete_event` does in init.lua:470-483. nio.first returns
-  -- as soon as either branch completes; it does NOT cancel the loser,
-  -- so the `future.wait()` coroutine keeps running and may write to
-  -- `resp` / `timed_out` after we return — harmless because we never
-  -- read them again, but it does mean the closure stays alive until
-  -- the server reply or the disconnect arrives.
+  -- accepted the request but never replied (slow discovery, swallowed
+  -- reply, deadlock). Race the wait against a sleep, exactly like the
+  -- `run_complete_event` bound in init.lua. nio.first returns as soon
+  -- as either branch completes; it does NOT cancel the loser, so the
+  -- `future.wait()` coroutine keeps running and may write to `resp` /
+  -- `timed_out` after we return — harmless because we never read them
+  -- again, but it does mean the closure stays alive until the server
+  -- reply arrives or the transport dies.
   local resp = nil
+  local wait_err = nil
   local timed_out = true
   nio.first({
     function()
-      resp = future.wait()
+      -- pcall: the future is failed (set_error) when the server process
+      -- exits or is stopped mid-wait. Map that to ERROR, not a crash.
+      local ok, r = pcall(future.wait)
+      if ok then
+        resp = r
+      else
+        wait_err = r
+      end
       timed_out = false
     end,
     function()
@@ -243,15 +222,19 @@ function M.send_did_change(paths)
   })
 
   if timed_out then
-    -- Drop the pending entry so a late reply doesn't resolve a
-    -- future no one is awaiting (which the on_data handler would
-    -- still try to consume, harmless but noisy). Caller (init.lua)
-    -- will disconnect + reconnect before sending `run` so the run
-    -- doesn't queue behind the still-processing `did_change` on
-    -- this same socket.
+    -- Drop the pending entry so a late reply doesn't resolve a future
+    -- no one is awaiting. Caller (init.lua) restarts the server before
+    -- sending `run`: stdio is a single in-order channel, so a `run`
+    -- sent behind the still-processing `did_change` would queue behind
+    -- it with no second connection to escape to.
     M.cancel_request(id)
     log.warn("server: did_change timed out after", DID_CHANGE_TIMEOUT_MS, "ms — proceeding")
     return DID_CHANGE.TIMEOUT
+  end
+
+  if wait_err then
+    log.warn("server: did_change transport error —", tostring(wait_err))
+    return DID_CHANGE.ERROR
   end
 
   if resp and resp.error then
@@ -275,145 +258,83 @@ function M.send_did_change(paths)
   return DID_CHANGE.ACKED
 end
 
---- Bounded, isolated liveness probe for the server we spawned
---- earlier this session.
+--- Bounded liveness probe for the server we spawned earlier this
+--- session, sent in-band over the existing stdio session (with stdio
+--- there is no side channel — the pipes are the only way in).
 ---
---- "Bounded" because an unbounded ping wait would hang
---- `ensure_server` forever against a wedged-but-listening server
---- (TCP accepts, ping never answers — e.g. a stuck prior run
---- holding `disc.lock`), turning a recoverable failure into a
---- persistent session lockup.
+--- "Bounded" because an unbounded ping wait would hang `ensure_server`
+--- forever against a wedged-but-alive server (process running, ping
+--- never answered — e.g. a stuck prior run holding `disc.lock`),
+--- turning a recoverable failure into a persistent session lockup.
 ---
---- "Isolated" because using `M.connect` / `M.send_request` would
---- mutate the module-level `handle` and `pending_requests`. If a
---- naive `nio.first(probe, timeout)` lets the timeout win, the
---- probe coroutine keeps running — `nio.first` doesn't cancel the
---- loser. A late `M.disconnect()` from that coroutine would then
---- tear down the new server's connection in the respawn path.
---- Using a fresh libuv socket here keeps the probe's only outside-
---- world side effect a `close()` on its own handle.
+--- On timeout the pending entry is cancelled so a late pong can't
+--- resolve a future no one is awaiting; `_on_data` drops replies whose
+--- id has no pending entry, so the stray line is harmless.
 ---
---- We don't bother parsing the JSON-RPC response. Any bytes back on
---- the socket are sufficient liveness evidence; for the wedged-
---- server case we care about, a wedged server won't write at all.
----
---- @param host string
---- @param port number
 --- @param timeout_ms number
 --- @return boolean alive
-local function probe_alive(host, port, timeout_ms)
-  local probe_handle = vim.uv.new_tcp()
-  -- nil = still probing, true = got a response, false = error/EOF
-  local result = nil
-  vim.uv.tcp_connect(probe_handle, host, port, function(err)
-    if err then
-      result = false
-      return
-    end
-    probe_handle:write('{"jsonrpc":"2.0","id":0,"method":"ping"}\n')
-    probe_handle:read_start(function(read_err, data)
-      if data then
-        result = true
-      elseif read_err then
-        result = false
-      end
-    end)
-  end)
+local function probe_alive(timeout_ms)
+  local ok, future, id = pcall(M.send_request, "ping")
+  if not ok then
+    return false
+  end
 
   -- Poll for completion. 50ms granularity is fine for a 1s budget.
   local elapsed = 0
-  while result == nil and elapsed < timeout_ms do
+  while not future.is_set() and elapsed < timeout_ms do
     nio.sleep(50)
     elapsed = elapsed + 50
   end
 
-  -- Always tear down. If a libuv callback fires after this point it
-  -- harmlessly writes to `result` (an unreferenced upvalue), and
-  -- `probe_handle:close()` is idempotent.
-  if not probe_handle:is_closing() then
-    probe_handle:read_stop()
-    probe_handle:close()
+  if not future.is_set() then
+    M.cancel_request(id)
+    return false
   end
 
-  return result == true
+  -- pcall: a failed future (process exited mid-probe) means dead. Any
+  -- successful reply — even a JSON-RPC error — is liveness evidence.
+  return (pcall(future.wait))
 end
 
 function M.ensure_server(config)
-  last_config = config
-  local host = config.server.host
-  local port = config.server.port
-  local endpoint = host .. ":" .. tostring(port)
+  log.info("server: ensure_server (stdio)")
 
-  log.info("server: ensure_server", endpoint)
-
-  -- auto_start=false: legacy "connect to a server I started elsewhere"
-  -- workflow. The plugin trusts the caller to point it at the right
-  -- server; we just verify a ping responds. (No project-identity
-  -- check; that's a known footgun documented in the README.)
-  if not config.server.auto_start then
-    local ok = pcall(function()
-      local f = M.connect(host, port)
-      f.wait()
-      local pong = M.send_request("ping")
-      pong.wait()
-      M.disconnect()
-    end)
-    if not ok then
-      M.disconnect()
-      log.error("server: not reachable at", endpoint, "and auto_start is disabled")
-      error("tryke server not reachable and auto_start is disabled")
-    end
-    log.info("server: connecting to externally-managed server at", endpoint)
-    return true
-  end
-
-  -- auto_start=true (default): the plugin owns the server lifecycle
-  -- for this nvim session.
-  --
-  -- If `server_process` is non-nil, we already spawned one earlier
-  -- in this session — reuse it after a bounded, isolated liveness
-  -- check (see `probe_alive`). The previous unbounded `pong.wait()`
-  -- would hang `ensure_server` forever against a wedged-but-
-  -- listening server, turning every subsequent test run in the
-  -- session into a lockup.
-  if server_process ~= nil then
-    if probe_alive(host, port, 1000) then
+  -- If a server from earlier this session is still up, reuse it after a
+  -- bounded liveness check (see `probe_alive`). An unbounded ping wait
+  -- would hang `ensure_server` forever against a wedged-but-alive
+  -- server, turning every subsequent test run into a lockup.
+  if M.is_running() then
+    if probe_alive(1000) then
       log.debug("server: reusing server spawned earlier this session")
       return true
     end
-    log.warn("server: handle present but not responding — respawning")
+    log.warn("server: process present but not responding — restarting")
+    M.stop_server()
+  elseif server_process ~= nil then
+    -- Process handle exists but the transport is gone (stdin closed) —
+    -- reap it before respawning.
     M.stop_server()
   end
 
-  -- First spawn this session (or a respawn after the previous one
-  -- died). ALWAYS try the spawn. We never piggy-back on a port
-  -- bound by a process we didn't spawn — that's silently fatal
-  -- when the other process is a tryke server for a different project
-  -- (its `discover` returns the wrong tests, `run` filters them all
-  -- out, and you spend the session staring at "0 tests run" with no
-  -- obvious cause).
+  -- Spawn a fresh server wired to our pipes. There is no port to
+  -- collide on and no way to piggy-back on someone else's server — the
+  -- stdio session belongs exclusively to this nvim process, which also
+  -- kills the old "connected to a server for a different project"
+  -- failure mode by construction.
   --
   -- "Spawn failed" can mean: binary not on PATH, missing exec
-  -- permission, port already in use, OOM, etc. We let `vim.uv.spawn`
-  -- fail however it fails, and surface whatever stderr the spawned
-  -- process wrote before exiting (the bound-port case in particular
-  -- yields a clear "Address already in use" message from `tokio`).
+  -- permission, OOM, etc. We let `vim.uv.spawn` fail however it fails,
+  -- and surface whatever stderr the spawned process wrote before
+  -- exiting.
+  local stdin = vim.uv.new_pipe()
   local stdout = vim.uv.new_pipe()
   local stderr = vim.uv.new_pipe()
 
   local cmd = config.tryke_command or "tryke"
-  local server_args, server_env = M._build_spawn_options(config, port)
+  local server_args, server_env = M._build_spawn_options(config)
 
-  -- Collect stderr so we can include it in the error message if the
-  -- spawn fails early. Without this the user sees an unhelpful
-  -- "failed to start within timeout" and has to dig through nvim
-  -- logs (or run tryke server by hand) to find the actual cause.
-  local stderr_chunks = {}
-  stderr:read_start(function(_, data)
-    if data then
-      table.insert(stderr_chunks, data)
-    end
-  end)
+  stderr_chunks = {}
+  read_buffer = ""
 
   -- `exit_code` is set by the on-exit callback iff the process
   -- terminates before our ready-poll succeeds. nil = still running
@@ -423,36 +344,87 @@ function M.ensure_server(config)
 
   log.info("server: spawning", cmd, table.concat(server_args, " "))
   -- `own_handle` is captured by the exit callback as an upvalue.
-  -- The callback only nils `server_process` when it still points at
-  -- this specific handle. Without that guard, a late exit callback
-  -- from a previously-killed server (e.g. after `stop_server`'s
+  -- The callback only touches module state when `server_process` still
+  -- points at this specific handle. Without that guard, a late exit
+  -- callback from a previously-killed server (e.g. after `stop_server`'s
   -- waits timed out and ensure_server already respawned) would
-  -- unconditionally erase the new process's handle, breaking the
-  -- next `is_alive`/reuse/cleanup decision.
+  -- unconditionally erase the new process's handle and fail the new
+  -- session's pending requests.
   local own_handle = nil
   own_handle = vim.uv.spawn(cmd, {
     args = server_args,
     env = server_env,
-    stdio = { nil, stdout, stderr },
+    stdio = { stdin, stdout, stderr },
   }, function(code, signal)
     log.info("server: process exited code =", code, "signal =", signal)
     exit_code = code
     exit_signal = signal
+    -- These pipes belong to this process regardless of whether it is
+    -- still the module's current server, so always release them.
+    if not stdin:is_closing() then
+      stdin:close()
+    end
+    if not stdout:is_closing() then
+      stdout:read_stop()
+      stdout:close()
+    end
+    if not stderr:is_closing() then
+      stderr:read_stop()
+      stderr:close()
+    end
     if server_process == own_handle then
       server_process = nil
+      stdin_pipe = nil
+      fail_pending(
+        string.format("tryke server exited (code=%s, signal=%s)", tostring(code), tostring(signal))
+      )
+    end
+    if own_handle and not own_handle:is_closing() then
+      own_handle:close()
     end
   end)
-  server_process = own_handle
 
-  if not server_process then
+  if not own_handle then
+    stdin:close()
+    stdout:close()
+    stderr:close()
     log.error("server: failed to spawn", cmd)
     error(string.format("failed to spawn `%s` (is it on PATH?)", cmd))
   end
 
+  server_process = own_handle
+  stdin_pipe = stdin
+
   log.debug("server: spawned pid", server_process:get_pid() or "<unknown>")
 
-  -- Poll until either the server accepts pings (success) or the
-  -- process exits without ever doing so (failure with stderr).
+  stdout:read_start(function(read_err, data)
+    if read_err then
+      log.warn("server: stdout read error —", read_err)
+      return
+    end
+    if data then
+      M._on_data(data)
+    end
+    -- data == nil is EOF: the server closed stdout, which only happens
+    -- on its way out — the exit callback owns the cleanup.
+  end)
+
+  -- Collect stderr so we can include it in the error message if the
+  -- spawn fails early. Without this the user sees an unhelpful
+  -- "failed to start within timeout" and has to dig through nvim
+  -- logs (or run tryke server by hand) to find the actual cause.
+  stderr:read_start(function(_, data)
+    if data then
+      table.insert(stderr_chunks, data)
+    end
+  end)
+
+  -- Readiness: a single ping, written immediately. Unlike the old TCP
+  -- transport there is no connect/retry dance — the OS buffers the
+  -- request on the pipe until the server starts reading, so the first
+  -- pong IS the ready signal. Poll until it arrives (success) or the
+  -- process exits without ever answering (failure with stderr).
+  local ready_future, ready_id = M.send_request("ping")
   local timeout = 10000
   local interval = 100
   local elapsed = 0
@@ -461,9 +433,8 @@ function M.ensure_server(config)
     elapsed = elapsed + interval
 
     if exit_code ~= nil then
-      -- Process died before becoming ready. Surface its stderr — for
-      -- port-in-use that's `Address already in use (os error 48)`;
-      -- for missing python it's an import error from the runner; etc.
+      -- Process died before becoming ready. Surface its stderr — for a
+      -- missing python that's an import error from the runner; etc.
       local stderr_text = table.concat(stderr_chunks)
       log.error("server: exited before ready, code =", exit_code, "signal =", exit_signal)
       error(
@@ -476,92 +447,122 @@ function M.ensure_server(config)
       )
     end
 
-    local connected = pcall(function()
-      local f = M.connect(host, port)
-      f.wait()
-      local pong = M.send_request("ping")
-      pong.wait()
-      M.disconnect()
-    end)
-
-    if connected then
+    if ready_future.is_set() and pcall(ready_future.wait) then
       log.info("server: ready after", elapsed, "ms")
       return true
     end
-
-    M.disconnect()
   end
 
   log.error("server: failed to start within", timeout, "ms")
+  M.cancel_request(ready_id)
   M.stop_server()
   error("tryke server failed to start within timeout")
 end
 
---- How long to wait for a SIGTERM'd server to reap before escalating
---- to SIGKILL. The on-exit callback registered in `ensure_server` nils
---- `server_process` when the OS actually reaps the child; until that
---- happens the kernel still holds the listening socket, and an
---- immediate respawn into the same port hits `Address already in
---- use`. 2 seconds is plenty for a graceful tryke server shutdown
---- (it just drops its worker pool and exits); the SIGKILL escalation
---- catches the wedged case.
-local STOP_SIGTERM_WAIT_MS = 2000
+--- Stop escalation bounds. The stdio server's clean-shutdown signal is
+--- EOF on its stdin (LSP convention — tryke PR #148); a healthy server
+--- exits promptly once its worker pool and FS watcher stop. SIGTERM
+--- covers a server that ignores EOF (wedged session task), SIGKILL
+--- covers a process that ignores SIGTERM. Each wait watches for the
+--- on-exit callback to nil `server_process` — until the OS actually
+--- reaps the child we must not consider it gone.
+local STOP_EOF_WAIT_MS = 1000
+local STOP_SIGTERM_WAIT_MS = 1000
 local STOP_SIGKILL_WAIT_MS = 500
+
+--- Block until `pred()` is true or `timeout_ms` elapses, driving the
+--- libuv loop so the process on-exit callback can fire meanwhile.
+---
+--- Which primitive we can use depends on the calling context, and
+--- `stop_server` is reachable from several:
+---   * Inside an nio task — `ensure_server`'s restart path, the
+---     `did_change` timeout path, the neotest `stop` strategy callback.
+---     When such a task is resumed *inside* a libuv callback (which is
+---     exactly what happens after a `future.wait()` that the stdout
+---     reader resolved), it runs in a "fast event context" where
+---     `vim.wait` raises E5560. `nio.sleep` is the only safe blocker
+---     there — and it works in every nio context.
+---   * The `VimLeavePre` autocmd — a synchronous main-loop callback with
+---     no nio task running, so `nio.sleep` can't schedule; `vim.wait` is
+---     the right (and allowed) primitive.
+--- Detect the nio task and pick accordingly.
+local function wait_until(pred, timeout_ms)
+  if pred() then
+    return true
+  end
+  if nio.current_task() then
+    local elapsed = 0
+    while not pred() and elapsed < timeout_ms do
+      nio.sleep(25)
+      elapsed = elapsed + 25
+    end
+  elseif not vim.in_fast_event() then
+    vim.wait(timeout_ms, pred, 25)
+  end
+  -- No `else`: a raw fast-event caller with no nio task can't block
+  -- safely — fall through best-effort (the kill signal was still sent;
+  -- reaping just happens after we return).
+  return pred()
+end
 
 function M.stop_server()
   if server_process and not server_process:is_closing() then
     local pid = server_process:get_pid()
-    server_process:kill("sigterm")
 
-    -- WAIT for the on-exit callback to nil `server_process`. SIGTERM
-    -- is asynchronous; without this wait the next spawn races the
-    -- kernel releasing the listening socket and can fail with
-    -- "Address already in use" — defeating the whole point of the
-    -- respawn path in `ensure_server`.
-    --
-    -- `vim.wait` (not `nio.sleep`) so this works from both the nio
-    -- coroutine that drives `ensure_server` AND the VimLeavePre
-    -- autocmd where nio may not be schedulable.
-    local exited = vim.wait(STOP_SIGTERM_WAIT_MS, function()
+    -- Graceful first: closing stdin delivers EOF, which the server
+    -- treats as "client gone" and uses to shut down cleanly.
+    if stdin_pipe and not stdin_pipe:is_closing() then
+      stdin_pipe:close()
+    end
+    stdin_pipe = nil
+
+    local function reaped()
       return server_process == nil
-    end, 25)
+    end
 
-    if not exited then
-      log.warn(
-        "server: SIGTERM didn't reap pid",
-        pid,
-        "within",
-        STOP_SIGTERM_WAIT_MS,
-        "ms — escalating to SIGKILL"
-      )
+    -- WAIT for the on-exit callback to nil `server_process` before each
+    -- escalation.
+    local exited = wait_until(reaped, STOP_EOF_WAIT_MS)
+
+    if not exited and server_process then
+      log.warn("server: EOF didn't stop pid", pid, "— escalating to SIGTERM")
+      pcall(function()
+        server_process:kill("sigterm")
+      end)
+      exited = wait_until(reaped, STOP_SIGTERM_WAIT_MS)
+    end
+
+    if not exited and server_process then
+      log.warn("server: SIGTERM didn't reap pid", pid, "— escalating to SIGKILL")
       pcall(function()
         server_process:kill("sigkill")
       end)
-      vim.wait(STOP_SIGKILL_WAIT_MS, function()
-        return server_process == nil
-      end, 25)
+      wait_until(reaped, STOP_SIGKILL_WAIT_MS)
     end
   end
+
   -- Belt + braces: if the waits timed out (e.g. nvim shutting down,
-  -- libuv loop frozen), nil the handle anyway so we don't leak it.
+  -- libuv loop frozen), clear the module state anyway so we don't leak
+  -- it — the exit callback's `server_process == own_handle` guard keeps
+  -- a late callback from clobbering a respawned server.
   server_process = nil
-  M.disconnect()
+  if stdin_pipe and not stdin_pipe:is_closing() then
+    stdin_pipe:close()
+  end
+  stdin_pipe = nil
+  read_buffer = ""
+  fail_pending("tryke server stopped")
 end
 
 vim.api.nvim_create_autocmd("VimLeavePre", {
   group = vim.api.nvim_create_augroup("neotest_tryke_cleanup", { clear = true }),
   callback = function()
-    -- Default to true when ensure_server was never called (the autocmd
-    -- still fires) so we keep the documented default behaviour.
-    local auto_stop = true
-    if last_config and last_config.server and last_config.server.auto_stop ~= nil then
-      auto_stop = last_config.server.auto_stop
-    end
-    if auto_stop then
-      M.stop_server()
-    else
-      M.disconnect()
-    end
+    -- The stdio server cannot outlive nvim — its stdin closes when the
+    -- editor exits, and EOF is its shutdown signal — so there is no
+    -- `auto_stop = false` "leave it running" mode anymore. Stop
+    -- explicitly anyway to give it the EOF → SIGTERM → SIGKILL
+    -- escalation instead of an abrupt teardown.
+    M.stop_server()
   end,
 })
 

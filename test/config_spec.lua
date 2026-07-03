@@ -6,10 +6,9 @@ describe("config.get", function()
 		assert.equal("tryke", cfg.tryke_command)
 		assert.equal("direct", cfg.mode)
 		assert.same({}, cfg.args)
-		assert.equal(2337, cfg.server.port)
-		assert.equal("127.0.0.1", cfg.server.host)
-		assert.is_true(cfg.server.auto_start)
-		assert.is_true(cfg.server.auto_stop)
+		-- The stdio server (tryke PR #148) has no host/port/lifecycle
+		-- options — the plugin owns the spawned process end to end.
+		assert.is_nil(cfg.server)
 		assert.is_nil(cfg.workers)
 		assert.is_false(cfg.fail_fast)
 	end)
@@ -26,12 +25,13 @@ describe("config.get", function()
 		assert.equal("tryke", cfg.tryke_command)
 	end)
 
-	it("deep-merges nested server options", function()
+	it("tolerates a legacy `server` table without merging defaults into it", function()
+		-- Users upgrading from the TCP transport may still pass
+		-- `server = {...}`; it must merge cleanly (and get ignored by the
+		-- runtime) rather than error.
 		local cfg = config.get({ server = { port = 9999 } })
 		assert.equal(9999, cfg.server.port)
-		assert.equal("127.0.0.1", cfg.server.host)
-		assert.is_true(cfg.server.auto_start)
-		assert.is_true(cfg.server.auto_stop)
+		assert.is_nil(cfg.server.host)
 	end)
 
 	it("user values override defaults", function()
