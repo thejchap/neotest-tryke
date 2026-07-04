@@ -23,22 +23,28 @@ end
 --- carries no `output_text` (e.g. the synthetic "not run" skips).
 local function materialize_output(converted, strategy_output)
   local text = converted.output_text
-  converted.output_text = nil
-  if type(text) == "string" and text ~= "" then
-    if type(strategy_output) == "string" and strategy_output ~= "" then
-      if text:sub(-1) ~= "\n" then
-        text = text .. "\n"
-      end
-      text = text .. "\ntryke process output:\n" .. strategy_output
-      if text:sub(-1) ~= "\n" then
-        text = text .. "\n"
-      end
+  if type(text) ~= "string" or text == "" then
+    converted.output_text = nil
+    return converted
+  end
+  if type(strategy_output) == "string" and strategy_output ~= "" then
+    if text:sub(-1) ~= "\n" then
+      text = text .. "\n"
     end
-    local path = nio.fn.tempname()
-    local ok = pcall(lib.files.write, path, text)
-    if ok then
-      converted.output = path
+    text = text .. "\ntryke process output:\n" .. strategy_output
+    if text:sub(-1) ~= "\n" then
+      text = text .. "\n"
     end
+  end
+  local path = nio.fn.tempname()
+  local ok, err = pcall(lib.files.write, path, text)
+  if ok then
+    converted.output = path
+    converted.output_text = nil
+  else
+    -- Keep `output_text` if the write fails so the formatted diagnostics
+    -- aren't silently lost, and surface why for debugging.
+    log.warn("results: failed to write output panel file:", tostring(err))
   end
   return converted
 end

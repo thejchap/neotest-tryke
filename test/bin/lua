@@ -13,7 +13,10 @@ done
 
 NEOTEST_RTP="$HOME/.local/share/nvim/lazy/neotest"
 NIO_RTP="$HOME/.local/share/nvim/lazy/nvim-nio"
-INIT='lua package.path = "lua/?.lua;lua/?/init.lua;" .. package.path; if vim.fn.isdirectory("'"$NIO_RTP"'") == 1 then vim.opt.runtimepath:append("'"$NIO_RTP"'") end; if vim.fn.isdirectory("'"$NEOTEST_RTP"'") == 1 then vim.opt.runtimepath:append("'"$NEOTEST_RTP"'") end'
+# neotest.lib.files (exercised by adapter.results in the specs) requires
+# plenary.path, so plenary has to be on the runtimepath too.
+PLENARY_RTP="$HOME/.local/share/nvim/lazy/plenary.nvim"
+INIT='lua package.path = "lua/?.lua;lua/?/init.lua;" .. package.path; if vim.fn.isdirectory("'"$NIO_RTP"'") == 1 then vim.opt.runtimepath:append("'"$NIO_RTP"'") end; if vim.fn.isdirectory("'"$PLENARY_RTP"'") == 1 then vim.opt.runtimepath:append("'"$PLENARY_RTP"'") end; if vim.fn.isdirectory("'"$NEOTEST_RTP"'") == 1 then vim.opt.runtimepath:append("'"$NEOTEST_RTP"'") end'
 
 if [ -n "$lua_expr" ]; then
 	nvim --headless --noplugin -u NONE --cmd "$INIT" -c "lua $lua_expr" -c 'quitall!'

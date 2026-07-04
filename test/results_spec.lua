@@ -388,6 +388,29 @@ describe("format_output", function()
 		assert.is_truthy(text:find("stdout:\nprinted to stdout", 1, true))
 		assert.is_truthy(text:find("stderr:\nprinted to stderr", 1, true))
 	end)
+
+	it("falls back to the expression when the label is empty", function()
+		-- `name=""` yields an empty (but truthy) label; the header should
+		-- use the expression rather than render a blank "✗ ".
+		local text = results.format_output({
+			test = { name = "test_blank" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = 'expect(x, name="").to_equal(2)',
+							expected = "2",
+							received = "1",
+							line = 3,
+						},
+					},
+				},
+			},
+		})
+		assert.is_nil(text:find("✗ \n", 1, true))
+		assert.is_truthy(text:find('expect(x, name="").to_equal(2)', 1, true))
+	end)
 end)
 
 describe("build_id", function()

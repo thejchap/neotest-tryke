@@ -130,6 +130,11 @@ function M.format_output(tryke_result)
     if detail.assertions and #detail.assertions > 0 then
       for _, assertion in ipairs(detail.assertions) do
         local label = M.expect_label(assertion.expression)
+        -- An empty label (e.g. `name=""`) is truthy in Lua but useless as a
+        -- header; treat it as absent so we fall back to the expression.
+        if label == "" then
+          label = nil
+        end
         table.insert(lines, "")
         table.insert(lines, "  ✗ " .. (label or assertion.expression or "assertion"))
         if label and assertion.expression and assertion.expression ~= "" then
