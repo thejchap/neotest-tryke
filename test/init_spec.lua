@@ -395,6 +395,19 @@ describe("collect_test_file_paths", function()
   end)
 end)
 
+describe("did_change recovery", function()
+  it("restarts after a timeout or transport-capable error", function()
+    assert.is_true(adapter._should_restart_after_did_change("timeout"))
+    assert.is_true(adapter._should_restart_after_did_change("error"))
+  end)
+
+  it("keeps the current transport for non-fatal outcomes", function()
+    for _, outcome in ipairs({ "acked", "unsupported", "malformed" }) do
+      assert.is_false(adapter._should_restart_after_did_change(outcome))
+    end
+  end)
+end)
+
 describe("build_direct_argv", function()
   -- Direct-mode argv is the runner's primary contract: it controls the
   -- argv passed to `tryke test` and any env (TRYKE_LOG) the child sees.
@@ -472,5 +485,52 @@ describe("build_direct_argv", function()
     for _, arg in ipairs(argv) do
       assert.are_not.equal("--python", arg)
     end
+  end)
+end)
+
+describe("results output materialization", function()
+  local a = require("nio").tests
+
+  a.it("preserves output captured by the strategy", function()
+    local results_path = vim.fn.tempname()
+    local strategy_path = vim.fn.tempname()
+    local output_line = vim.json.encode({
+      event = "test_complete",
+      result = {
+        test = { name = "test_add", file_path = "tests/math.py" },
+        outcome = { status = "passed" },
+      },
+    })
+    local results_file = assert(io.open(results_path, "w"))
+    results_file:write(output_line .. "\n")
+    results_file:close()
+    local strategy_file = assert(io.open(strategy_path, "w"))
+    strategy_file:write("tryke worker diagnostic\n")
+    strategy_file:close()
+
+    local id = "/project/tests/math.py::test_add"
+    local tree = build_tree({
+      {
+        type = "test",
+        path = "/project/tests/math.py",
+        name = "test_add",
+        id = id,
+        range = { 0, 0, 0, 0 },
+      },
+    })
+    local parsed = adapter.results({
+      context = { results_path = results_path, root = "/project" },
+    }, {
+      code = 0,
+      output = strategy_path,
+    }, tree)
+
+    local materialized = assert(io.open(parsed[id].output, "r")):read("*a")
+    assert.is_truthy(materialized:find("test_add", 1, true))
+    assert.is_truthy(materialized:find("tryke worker diagnostic", 1, true))
+
+    os.remove(results_path)
+    os.remove(strategy_path)
+    os.remove(parsed[id].output)
   end)
 end)

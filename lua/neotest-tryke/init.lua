@@ -16,13 +16,24 @@ end
 --- Materialise a converted result's formatted panel text (`output_text`,
 --- produced by `results.format_output`) into a temp file and point
 --- `result.output` at it, so the neotest output window (`<leader>t o`)
---- shows readable diagnostics instead of the raw NDJSON stream. Mutates
+--- shows readable diagnostics instead of the raw NDJSON stream. Append
+--- any output captured by the strategy (notably tryke's stderr logs in
+--- direct mode) so replacing the output path does not discard it. Mutates
 --- and returns the same table for call-site brevity. No-op when the result
 --- carries no `output_text` (e.g. the synthetic "not run" skips).
-local function materialize_output(converted)
+local function materialize_output(converted, strategy_output)
   local text = converted.output_text
   converted.output_text = nil
   if type(text) == "string" and text ~= "" then
+    if type(strategy_output) == "string" and strategy_output ~= "" then
+      if text:sub(-1) ~= "\n" then
+        text = text .. "\n"
+      end
+      text = text .. "\ntryke process output:\n" .. strategy_output
+      if text:sub(-1) ~= "\n" then
+        text = text .. "\n"
+      end
+    end
     local path = nio.fn.tempname()
     local ok = pcall(lib.files.write, path, text)
     if ok then
@@ -377,6 +388,10 @@ local function collect_test_file_paths(tree, position)
   return paths
 end
 
+local function should_restart_after_did_change(outcome)
+  return outcome == server.DID_CHANGE.TIMEOUT or outcome == server.DID_CHANGE.ERROR
+end
+
 local function build_server_spec(args)
   local tree = args.tree
   local position = tree:data()
@@ -491,14 +506,12 @@ local function build_server_spec(args)
         if outcome ~= server.DID_CHANGE.ACKED then
           log.warn("server: did_change outcome =", outcome, "— run may race recent file changes")
         end
-        -- If `did_change` timed out, the server is still processing it
-        -- on its session read loop. Sending `run` behind it would queue
-        -- on the same in-order stdio channel and `response_future.wait()`
-        -- below is unbounded — best case it eventually unblocks, worst
-        -- case it never does. Unlike TCP there is no second connection
-        -- to escape to, so restart the server and let the run land on a
-        -- fresh session.
-        if outcome == server.DID_CHANGE.TIMEOUT then
+        -- A timeout leaves the server processing `did_change` on its
+        -- in-order session read loop; ERROR can mean the process exited
+        -- while its response future was pending. In either case, sending
+        -- `run` on the current stdio session can block or fail immediately.
+        -- Restart first and let the run land on a fresh transport.
+        if should_restart_after_did_change(outcome) then
           server.stop_server()
           server.ensure_server(cfg)
         end
@@ -660,10 +673,15 @@ function adapter.results(spec, result, tree)
 
   local parsed = results_mod.parse_output(content, root)
   log.debug("results: parsed", vim.tbl_count(parsed), "ids from tryke output")
+  local strategy_output = nil
+  if type(result.output) == "string" and result.output ~= "" and result.output ~= output_path then
+    strategy_output = lib.files.read(result.output)
+  end
   for id in pairs(parsed) do
     -- Turn each result's formatted panel text into an `output` file so
-    -- `<leader>t o` renders readable diagnostics rather than raw NDJSON.
-    materialize_output(parsed[id])
+    -- `<leader>t o` renders readable diagnostics rather than raw NDJSON,
+    -- while retaining stderr captured separately by neotest's strategy.
+    materialize_output(parsed[id], strategy_output)
     log.trace("results: parsed id", id, "status =", parsed[id].status)
   end
 
@@ -697,6 +715,7 @@ end
 adapter._collect_test_ids = collect_test_ids
 adapter._collect_test_file_paths = collect_test_file_paths
 adapter._build_direct_argv = build_direct_argv
+adapter._should_restart_after_did_change = should_restart_after_did_change
 
 setmetatable(adapter, {
   __call = function(_, opts)

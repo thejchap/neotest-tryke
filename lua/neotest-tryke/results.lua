@@ -155,6 +155,21 @@ function M.format_output(tryke_result)
     end
   end
 
+  local function append_stream(label, stream)
+    if type(stream) ~= "string" or stream == "" then
+      return
+    end
+    table.insert(lines, "")
+    table.insert(lines, label .. ":")
+    table.insert(lines, (stream:gsub("\n$", "")))
+  end
+
+  -- Captured test output is emitted alongside `test` and `outcome`, not
+  -- inside `outcome.detail`. Preserve it in the formatted file because
+  -- that file replaces neotest's raw strategy output for this position.
+  append_stream("stdout", tryke_result.stdout)
+  append_stream("stderr", tryke_result.stderr)
+
   return table.concat(lines, "\n") .. "\n"
 end
 
