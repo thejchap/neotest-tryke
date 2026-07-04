@@ -377,6 +377,17 @@ describe("format_output", function()
 		assert.is_truthy(text:find("KeyError: 'k'", 1, true))
 		assert.is_truthy(text:find("in crashes", 1, true))
 	end)
+
+	it("includes captured test stdout and stderr", function()
+		local text = results.format_output({
+			test = { name = "test_noisy" },
+			outcome = { status = "passed" },
+			stdout = "printed to stdout\n",
+			stderr = "printed to stderr\n",
+		})
+		assert.is_truthy(text:find("stdout:\nprinted to stdout", 1, true))
+		assert.is_truthy(text:find("stderr:\nprinted to stderr", 1, true))
+	end)
 end)
 
 describe("build_id", function()
