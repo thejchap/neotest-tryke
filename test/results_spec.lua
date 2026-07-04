@@ -39,12 +39,10 @@ describe("convert_result", function()
 		assert.equal(9, r.errors[1].line)
 	end)
 
-	it("leads assertion diagnostics with the expectation label, not the test name", function()
-		-- The expression is already visible on the annotated line and the
-		-- test name is on the tree node, so the inline diagnostic shows
-		-- only the per-expectation `name=` label. This keeps individual
-		-- asserts in a multi-expectation test distinguishable without
-		-- crowding the gutter with the test name.
+	it("omits the expectation label from the inline diagnostic", function()
+		-- Even with a `name=` label, the inline diagnostic is just
+		-- expected/received. The label duplicates the expression that's
+		-- already on the annotated line, so it only crowds the gutter.
 		local r = results.convert_result({
 			test = { name = "test_basic", display_name = "basic equality" },
 			outcome = {
@@ -61,58 +59,35 @@ describe("convert_result", function()
 				},
 			},
 		})
-		assert.equal("1 equals itself: expected 2, received 1", r.errors[1].message)
+		assert.equal("expected 2, received 1", r.errors[1].message)
 		assert.equal(5, r.errors[1].line)
 	end)
 
-	it("uses only the expectation label for parametrised cases", function()
-		-- The tree node already reads `basic[1+1]`; the inline diagnostic
-		-- carries just the expectation label.
+	it("gives every assertion in a multi-expectation test a bare message", function()
 		local r = results.convert_result({
-			test = { name = "labelled_addition", display_name = "basic", case_label = "1 + 1" },
+			test = { name = "test_multi" },
 			outcome = {
 				status = "failed",
 				detail = {
 					assertions = {
 						{
-							expression = 'expect(a + b, name="a + b matches expected").to_equal(expected)',
-							expected = "2",
-							received = "3",
-							line = 4,
-						},
-					},
-				},
-			},
-		})
-		assert.equal(
-			"a + b matches expected: expected 2, received 3",
-			r.errors[1].message
-		)
-	end)
-
-	it("uses the expectation label for parametrised cases without @test(name)", function()
-		-- Bare `@test.cases(...)` doesn't set display_name; the inline
-		-- diagnostic still shows only the expectation label.
-		local r = results.convert_result({
-			test = { name = "square_typed", case_label = "one" },
-			outcome = {
-				status = "failed",
-				detail = {
-					assertions = {
-						{
-							expression = 'expect(n * n, name="n squared matches expected").to_equal(expected)',
+							expression = 'expect(a, name="a is two").to_equal(2)',
 							expected = "2",
 							received = "1",
+							line = 4,
+						},
+						{
+							expression = "expect(b).to_equal(3)",
+							expected = "3",
+							received = "4",
 							line = 5,
 						},
 					},
 				},
 			},
 		})
-		assert.equal(
-			"n squared matches expected: expected 2, received 1",
-			r.errors[1].message
-		)
+		assert.equal("expected 2, received 1", r.errors[1].message)
+		assert.equal("expected 3, received 4", r.errors[2].message)
 	end)
 
 	it("omits any prefix when no expectation label is recoverable", function()
@@ -133,54 +108,6 @@ describe("convert_result", function()
 			},
 		})
 		assert.equal("expected 3, received 5", r.errors[1].message)
-	end)
-
-	it("recovers positional `expect(<simple>, \"label\")` form", function()
-		-- vscode's parameter-name hints render `expect(1, "label")` as
-		-- `expect(expr=1, name="label")` in the editor, but the wire
-		-- expression carries the raw source — positional args, no
-		-- `name=` kwarg. The label still needs to surface in the
-		-- diagnostic.
-		local r = results.convert_result({
-			test = { name = "test_basic", display_name = "basic equality" },
-			outcome = {
-				status = "failed",
-				detail = {
-					assertions = {
-						{
-							expression = 'expect(1, "1 equals itself").to_equal(2)',
-							expected = "2",
-							received = "1",
-							line = 27,
-						},
-					},
-				},
-			},
-		})
-		assert.equal(
-			"1 equals itself: expected 2, received 1",
-			r.errors[1].message
-		)
-	end)
-
-	it("recovers single-quoted name= label from expression", function()
-		local r = results.convert_result({
-			test = { name = "test_basic", display_name = "basic" },
-			outcome = {
-				status = "failed",
-				detail = {
-					assertions = {
-						{
-							expression = "expect(x, name='quoted label').to_equal(2)",
-							expected = "2",
-							received = "1",
-							line = 4,
-						},
-					},
-				},
-			},
-		})
-		assert.equal("quoted label: expected 2, received 1", r.errors[1].message)
 	end)
 
 	it("maps failed with message only", function()
@@ -393,6 +320,49 @@ describe("format_output", function()
 		assert.is_truthy(text:find("received: 1", 1, true))
 		assert.is_truthy(text:find("y is three", 1, true))
 		assert.is_truthy(text:find("at line 7", 1, true))
+	end)
+
+	it("recovers a positional `expect(<simple>, \"label\")` label in the panel", function()
+		-- The inline diagnostic drops the label, but the output panel still
+		-- titles each assertion with it, so `expect_label`'s positional-form
+		-- recovery stays exercised.
+		local text = results.format_output({
+			test = { name = "test_basic", display_name = "basic equality" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = 'expect(1, "1 equals itself").to_equal(2)',
+							expected = "2",
+							received = "1",
+							line = 27,
+						},
+					},
+				},
+			},
+		})
+		assert.is_truthy(text:find("1 equals itself", 1, true))
+	end)
+
+	it("recovers a single-quoted name= label in the panel", function()
+		local text = results.format_output({
+			test = { name = "test_basic", display_name = "basic" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = "expect(x, name='quoted label').to_equal(2)",
+							expected = "2",
+							received = "1",
+							line = 4,
+						},
+					},
+				},
+			},
+		})
+		assert.is_truthy(text:find("quoted label", 1, true))
 	end)
 
 	it("renders exception message and traceback for non-assertion failures", function()

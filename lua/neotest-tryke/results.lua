@@ -177,21 +177,14 @@ function M.convert_result(tryke_result)
     local detail = outcome.detail
 
     if detail and detail.assertions and #detail.assertions > 0 then
-      -- Inline diagnostics show ONLY the assertion's own diagnostic, never
-      -- the test name. The test name is already visible on the tree node the
-      -- diagnostic is attached to, so leading with it just crowds the gutter
-      -- and gets truncated on narrow screens. Lead with the per-expectation
-      -- `name=` label when present, else fall through to `expected/received`
-      -- alone (the annotated source line already carries the expression).
+      -- Inline diagnostics show ONLY `expected/received`. The test name is
+      -- already on the tree node the diagnostic attaches to, and the
+      -- expectation's `name=` label plus the full expression are already on
+      -- the annotated source line the diagnostic sits against — repeating
+      -- either just crowds the gutter and gets truncated on narrow screens.
       for _, assertion in ipairs(detail.assertions) do
-        local label = M.expect_label(assertion.expression)
-        local prefix = (label and label ~= "") and (label .. ": ") or ""
         table.insert(errors, {
-          message = prefix
-            .. "expected "
-            .. assertion.expected
-            .. ", received "
-            .. assertion.received,
+          message = "expected " .. assertion.expected .. ", received " .. assertion.received,
           line = assertion.line - 1,
         })
       end
