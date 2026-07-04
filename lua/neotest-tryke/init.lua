@@ -275,7 +275,12 @@ local function build_direct_spec(args)
             local test = tryke_result.test
             if test.file_path then
               local id = results_mod.build_id(root, test)
-              local converted = materialize_output(results_mod.convert_result(tryke_result))
+              -- Interim streamed result — no `output` file here. Building it
+              -- needs `nio.fn.tempname()`, which yields to the nio scheduler
+              -- and is only legal inside neotest's async run context, not in
+              -- this streaming callback. The output file is materialised once,
+              -- in `adapter.results`, which neotest runs in that context.
+              local converted = results_mod.convert_result(tryke_result)
               log.trace("stream: test_complete", id, "status =", converted.status)
               streamed[id] = converted
             end
@@ -437,7 +442,11 @@ local function build_server_spec(args)
               "status =",
               tryke_result.outcome and tryke_result.outcome.status
             )
-            streamed_results[id] = materialize_output(results_mod.convert_result(tryke_result))
+            -- Interim result only. The `output` file is materialised later
+            -- in `adapter.results`; doing it here would call the async
+            -- `nio.fn.tempname()` from this synchronous notification
+            -- callback, which is not a valid nio async context.
+            streamed_results[id] = results_mod.convert_result(tryke_result)
           end
         end
       end)
