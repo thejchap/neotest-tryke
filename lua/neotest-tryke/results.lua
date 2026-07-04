@@ -108,6 +108,56 @@ function M.build_id(root, test)
   return table.concat(parts, "::")
 end
 
+--- Render a human-readable diagnostic panel for a single test result.
+--- This is what the neotest output window (`<leader>t o`) shows for a
+--- position — the raw NDJSON the run streams is unreadable there, so we
+--- format the outcome, per-assertion expected/received, and any exception
+--- traceback into aligned plain text. Returns a string (with a trailing
+--- newline) ready to be written to the result's `output` file.
+---@param tryke_result table
+---@return string
+function M.format_output(tryke_result)
+  local test = tryke_result.test
+  local outcome = tryke_result.outcome
+  local status = status_map[outcome.status] or "failed"
+  local lead = M.diagnostic_lead(test) or "(test)"
+  local icon = ({ passed = "✓", skipped = "○" })[status] or "✗"
+
+  local lines = { icon .. " " .. lead .. "  [" .. tostring(outcome.status) .. "]" }
+  local detail = outcome.detail
+
+  if status == "failed" and detail then
+    if detail.assertions and #detail.assertions > 0 then
+      for _, assertion in ipairs(detail.assertions) do
+        local label = M.expect_label(assertion.expression)
+        table.insert(lines, "")
+        table.insert(lines, "  ✗ " .. (label or assertion.expression or "assertion"))
+        if label and assertion.expression and assertion.expression ~= "" then
+          table.insert(lines, "      " .. assertion.expression)
+        end
+        table.insert(lines, "      expected: " .. tostring(assertion.expected))
+        table.insert(lines, "      received: " .. tostring(assertion.received))
+        if assertion.line then
+          table.insert(lines, "      at line " .. tostring(assertion.line))
+        end
+      end
+    else
+      if type(detail.message) == "string" and detail.message ~= "" then
+        table.insert(lines, "")
+        table.insert(lines, "  " .. detail.message)
+      end
+      if type(detail.traceback) == "string" and detail.traceback ~= "" then
+        table.insert(lines, "")
+        for tb_line in detail.traceback:gmatch("[^\n]+") do
+          table.insert(lines, "  " .. tb_line)
+        end
+      end
+    end
+  end
+
+  return table.concat(lines, "\n") .. "\n"
+end
+
 function M.convert_result(tryke_result)
   local outcome = tryke_result.outcome
   local neotest_status = status_map[outcome.status] or "failed"
@@ -127,27 +177,18 @@ function M.convert_result(tryke_result)
     local detail = outcome.detail
 
     if detail and detail.assertions and #detail.assertions > 0 then
-      -- Lead the inline diagnostic with the test-level handle so it
-      -- correlates with the test tree, then append the per-expectation
-      -- `name=` label when set. The full expression is already on the
-      -- annotated line, so duplicating it in the diagnostic only crowds
-      -- the gutter and gets truncated on narrow screens.
-      local test_lead = M.diagnostic_lead(tryke_result.test)
+      -- Inline diagnostics show ONLY the assertion's own diagnostic, never
+      -- the test name. The test name is already visible on the tree node the
+      -- diagnostic is attached to, so leading with it just crowds the gutter
+      -- and gets truncated on narrow screens. Lead with the per-expectation
+      -- `name=` label when present, else fall through to `expected/received`
+      -- alone (the annotated source line already carries the expression).
       for _, assertion in ipairs(detail.assertions) do
         local label = M.expect_label(assertion.expression)
-        local prefix
-        if test_lead and label then
-          prefix = test_lead .. ": " .. label
-        elseif test_lead then
-          prefix = test_lead
-        elseif label then
-          prefix = label
-        else
-          prefix = assertion.expression or ""
-        end
+        local prefix = (label and label ~= "") and (label .. ": ") or ""
         table.insert(errors, {
           message = prefix
-            .. ": expected "
+            .. "expected "
             .. assertion.expected
             .. ", received "
             .. assertion.received,
@@ -191,6 +232,12 @@ function M.convert_result(tryke_result)
       result.errors = errors
     end
   end
+
+  -- Formatted panel text for the neotest output window. Kept as a plain
+  -- string here (this module stays IO-free for unit testing); the adapter
+  -- materialises it to a temp file and sets `result.output` before handing
+  -- results to neotest.
+  result.output_text = M.format_output(tryke_result)
 
   return result
 end

@@ -13,6 +13,25 @@ local function shell_escape(s)
   return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
+--- Materialise a converted result's formatted panel text (`output_text`,
+--- produced by `results.format_output`) into a temp file and point
+--- `result.output` at it, so the neotest output window (`<leader>t o`)
+--- shows readable diagnostics instead of the raw NDJSON stream. Mutates
+--- and returns the same table for call-site brevity. No-op when the result
+--- carries no `output_text` (e.g. the synthetic "not run" skips).
+local function materialize_output(converted)
+  local text = converted.output_text
+  converted.output_text = nil
+  if type(text) == "string" and text ~= "" then
+    local path = nio.fn.tempname()
+    local ok = pcall(lib.files.write, path, text)
+    if ok then
+      converted.output = path
+    end
+  end
+  return converted
+end
+
 local adapter = { name = "neotest-tryke" }
 
 function adapter.root(dir)
@@ -256,7 +275,7 @@ local function build_direct_spec(args)
             local test = tryke_result.test
             if test.file_path then
               local id = results_mod.build_id(root, test)
-              local converted = results_mod.convert_result(tryke_result)
+              local converted = materialize_output(results_mod.convert_result(tryke_result))
               log.trace("stream: test_complete", id, "status =", converted.status)
               streamed[id] = converted
             end
@@ -418,7 +437,7 @@ local function build_server_spec(args)
               "status =",
               tryke_result.outcome and tryke_result.outcome.status
             )
-            streamed_results[id] = results_mod.convert_result(tryke_result)
+            streamed_results[id] = materialize_output(results_mod.convert_result(tryke_result))
           end
         end
       end)
@@ -633,6 +652,9 @@ function adapter.results(spec, result, tree)
   local parsed = results_mod.parse_output(content, root)
   log.debug("results: parsed", vim.tbl_count(parsed), "ids from tryke output")
   for id in pairs(parsed) do
+    -- Turn each result's formatted panel text into an `output` file so
+    -- `<leader>t o` renders readable diagnostics rather than raw NDJSON.
+    materialize_output(parsed[id])
     log.trace("results: parsed id", id, "status =", parsed[id].status)
   end
 
