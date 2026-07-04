@@ -31,22 +31,20 @@ describe("convert_result", function()
 		assert.equal("failed", r.status)
 		assert.equal("test_sub: failed", r.short)
 		assert.equal(1, #r.errors)
-		-- The diagnostic leads with the test name (matching the test
-		-- tree entry) rather than the raw assertion expression — same
-		-- cascade as `falls back to function name when neither
-		-- display_name nor case_label set` below.
-		assert.equal("test_sub: expected 3, received 5", r.errors[1].message)
+		-- The inline diagnostic never carries the test name (it's already
+		-- on the tree node the diagnostic attaches to). With no `name=`
+		-- label recoverable from the expression, the message is the bare
+		-- expected/received.
+		assert.equal("expected 3, received 5", r.errors[1].message)
 		assert.equal(9, r.errors[1].line)
 	end)
 
-	it("leads assertion diagnostics with display_name when present", function()
-		-- The expression is already visible on the annotated line, so
-		-- repeating it inside the diagnostic just crowds the gutter and
-		-- often gets truncated. Leading with the test's display_name
-		-- gives the diagnostic a stable, recognisable handle that
-		-- matches the test tree entry. The per-expectation `name=`
-		-- label is appended when set so individual asserts in a test
-		-- with multiple expectations stay distinguishable.
+	it("leads assertion diagnostics with the expectation label, not the test name", function()
+		-- The expression is already visible on the annotated line and the
+		-- test name is on the tree node, so the inline diagnostic shows
+		-- only the per-expectation `name=` label. This keeps individual
+		-- asserts in a multi-expectation test distinguishable without
+		-- crowding the gutter with the test name.
 		local r = results.convert_result({
 			test = { name = "test_basic", display_name = "basic equality" },
 			outcome = {
@@ -63,13 +61,13 @@ describe("convert_result", function()
 				},
 			},
 		})
-		assert.equal("basic equality: 1 equals itself: expected 2, received 1", r.errors[1].message)
+		assert.equal("1 equals itself: expected 2, received 1", r.errors[1].message)
 		assert.equal(5, r.errors[1].line)
 	end)
 
-	it("composes display_name with case_label for parametrised cases", function()
-		-- Mirrors the test-tree entry `basic[1+1]` when an `@test("basic")
-		-- .cases(case("1+1"), …)` row fails.
+	it("uses only the expectation label for parametrised cases", function()
+		-- The tree node already reads `basic[1+1]`; the inline diagnostic
+		-- carries just the expectation label.
 		local r = results.convert_result({
 			test = { name = "labelled_addition", display_name = "basic", case_label = "1 + 1" },
 			outcome = {
@@ -87,15 +85,14 @@ describe("convert_result", function()
 			},
 		})
 		assert.equal(
-			"basic[1 + 1]: a + b matches expected: expected 2, received 3",
+			"a + b matches expected: expected 2, received 3",
 			r.errors[1].message
 		)
 	end)
 
-	it("uses function-name leaf for parametrised cases without @test(name)", function()
-		-- Bare `@test.cases(...)` doesn't set display_name, so the cascade
-		-- falls through to the python function name composed with the
-		-- case label — a much cleaner handle than the raw expression.
+	it("uses the expectation label for parametrised cases without @test(name)", function()
+		-- Bare `@test.cases(...)` doesn't set display_name; the inline
+		-- diagnostic still shows only the expectation label.
 		local r = results.convert_result({
 			test = { name = "square_typed", case_label = "one" },
 			outcome = {
@@ -113,12 +110,12 @@ describe("convert_result", function()
 			},
 		})
 		assert.equal(
-			"square_typed[one]: n squared matches expected: expected 2, received 1",
+			"n squared matches expected: expected 2, received 1",
 			r.errors[1].message
 		)
 	end)
 
-	it("falls back to function name when neither display_name nor case_label set", function()
+	it("omits any prefix when no expectation label is recoverable", function()
 		local r = results.convert_result({
 			test = { name = "test_sub" },
 			outcome = {
@@ -135,7 +132,7 @@ describe("convert_result", function()
 				},
 			},
 		})
-		assert.equal("test_sub: expected 3, received 5", r.errors[1].message)
+		assert.equal("expected 3, received 5", r.errors[1].message)
 	end)
 
 	it("recovers positional `expect(<simple>, \"label\")` form", function()
@@ -161,7 +158,7 @@ describe("convert_result", function()
 			},
 		})
 		assert.equal(
-			"basic equality: 1 equals itself: expected 2, received 1",
+			"1 equals itself: expected 2, received 1",
 			r.errors[1].message
 		)
 	end)
@@ -183,7 +180,7 @@ describe("convert_result", function()
 				},
 			},
 		})
-		assert.equal("basic: quoted label: expected 2, received 1", r.errors[1].message)
+		assert.equal("quoted label: expected 2, received 1", r.errors[1].message)
 	end)
 
 	it("maps failed with message only", function()
@@ -341,6 +338,74 @@ describe("convert_result", function()
 			outcome = { status = "todo" },
 		})
 		assert.equal("skipped", r.status)
+	end)
+
+	it("attaches formatted output_text for the output panel", function()
+		local r = results.convert_result({
+			test = { name = "test_add", display_name = "basic addition" },
+			outcome = { status = "passed" },
+		})
+		-- The adapter materialises `output_text` to the result's `output`
+		-- file so `<leader>t o` shows readable diagnostics, not NDJSON.
+		assert.is_string(r.output_text)
+		assert.is_truthy(r.output_text:find("basic addition", 1, true))
+		assert.is_truthy(r.output_text:find("passed", 1, true))
+	end)
+end)
+
+describe("format_output", function()
+	it("renders a passing test with a check and status", function()
+		local text = results.format_output({
+			test = { name = "test_add", display_name = "basic addition" },
+			outcome = { status = "passed" },
+		})
+		assert.is_truthy(text:find("✓", 1, true))
+		assert.is_truthy(text:find("basic addition", 1, true))
+		assert.is_truthy(text:find("%[passed%]"))
+	end)
+
+	it("renders each assertion with expected and received", function()
+		local text = results.format_output({
+			test = { name = "test_calc", display_name = "arithmetic" },
+			outcome = {
+				status = "failed",
+				detail = {
+					assertions = {
+						{
+							expression = 'expect(x, name="x is two").to_equal(2)',
+							expected = "2",
+							received = "1",
+							line = 6,
+						},
+						{
+							expression = 'expect(y, name="y is three").to_equal(3)',
+							expected = "3",
+							received = "4",
+							line = 7,
+						},
+					},
+				},
+			},
+		})
+		assert.is_truthy(text:find("✗", 1, true))
+		assert.is_truthy(text:find("x is two", 1, true))
+		assert.is_truthy(text:find("expected: 2", 1, true))
+		assert.is_truthy(text:find("received: 1", 1, true))
+		assert.is_truthy(text:find("y is three", 1, true))
+		assert.is_truthy(text:find("at line 7", 1, true))
+	end)
+
+	it("renders exception message and traceback for non-assertion failures", function()
+		local tb = 'Traceback (most recent call last):\n  File "m.py", line 6, in crashes\n    return a["k"]\nKeyError: \'k\'\n'
+		local text = results.format_output({
+			test = { name = "crashes", file_path = "tests/m.py" },
+			outcome = {
+				status = "failed",
+				detail = { message = "KeyError: 'k'", traceback = tb },
+			},
+		})
+		assert.is_truthy(text:find("KeyError: 'k'", 1, true))
+		assert.is_truthy(text:find("in crashes", 1, true))
 	end)
 end)
 
