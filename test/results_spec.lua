@@ -11,6 +11,51 @@ describe("convert_result", function()
 		assert.is_nil(r.errors)
 	end)
 
+	it("collects every expected assertion line from a passed test", function()
+		local r = results.convert_result({
+			test = {
+				name = "test_add",
+				file_path = "tests/math.py",
+				expected_assertions = {
+					{ line = 8 },
+					{ line = 7 },
+					{ line = 8 },
+				},
+			},
+			outcome = { status = "passed" },
+		})
+		assert.same({ 7, 8 }, r._passed_assertion_lines)
+		assert.equal("tests/math.py", r._file_path)
+	end)
+
+	it("collects only executed non-failing assertions from a failed test", function()
+		local r = results.convert_result({
+			test = {
+				name = "test_add",
+				expected_assertions = {
+					{ line = 4 },
+					{ line = 5 },
+					{ line = 6 },
+				},
+			},
+			outcome = {
+				status = "failed",
+				detail = {
+					executed_lines = { 4, 5 },
+					assertions = {
+						{
+							expression = "expect(value).to_equal(2)",
+							expected = "2",
+							received = "1",
+							line = 5,
+						},
+					},
+				},
+			},
+		})
+		assert.same({ 4 }, r._passed_assertion_lines)
+	end)
+
 	it("maps failed with assertions", function()
 		local r = results.convert_result({
 			test = { name = "test_sub" },

@@ -178,6 +178,52 @@ function M.format_output(tryke_result)
   return table.concat(lines, "\n") .. "\n"
 end
 
+--- Return the one-based source lines of expectations that passed.
+---
+--- Tryke statically includes every expectation in `test.expected_assertions`.
+--- A passed test therefore means every discovered expectation passed. For a
+--- failed test, `detail.executed_lines` identifies expectations reached before
+--- the test aborted; remove the lines carrying failed assertions from that set.
+--- Lines are de-duplicated because Vim can display only one useful status sign
+--- for multiple expectations written on the same source line.
+---@param tryke_result table
+---@return number[]
+function M.passed_assertion_lines(tryke_result)
+  local outcome = tryke_result.outcome or {}
+  local expected = (tryke_result.test or {}).expected_assertions or {}
+  local candidates = {}
+
+  if outcome.status == "passed" then
+    for _, assertion in ipairs(expected) do
+      table.insert(candidates, assertion.line)
+    end
+  elseif outcome.status == "failed" and outcome.detail then
+    for _, line in ipairs(outcome.detail.executed_lines or {}) do
+      table.insert(candidates, line)
+    end
+  end
+
+  local failed = {}
+  if outcome.status == "failed" and outcome.detail then
+    for _, assertion in ipairs(outcome.detail.assertions or {}) do
+      if type(assertion.line) == "number" then
+        failed[assertion.line] = true
+      end
+    end
+  end
+
+  local seen = {}
+  local lines = {}
+  for _, line in ipairs(candidates) do
+    if type(line) == "number" and line > 0 and not failed[line] and not seen[line] then
+      seen[line] = true
+      table.insert(lines, line)
+    end
+  end
+  table.sort(lines)
+  return lines
+end
+
 function M.convert_result(tryke_result)
   local outcome = tryke_result.outcome
   local neotest_status = status_map[outcome.status] or "failed"
@@ -251,6 +297,8 @@ function M.convert_result(tryke_result)
   -- materialises it to a temp file and sets `result.output` before handing
   -- results to neotest.
   result.output_text = M.format_output(tryke_result)
+  result._passed_assertion_lines = M.passed_assertion_lines(tryke_result)
+  result._file_path = tryke_result.test and tryke_result.test.file_path
 
   return result
 end

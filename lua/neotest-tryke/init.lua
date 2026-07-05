@@ -3,6 +3,7 @@ local nio = require("nio")
 local config = require("neotest-tryke.config")
 local ts = require("neotest-tryke.treesitter")
 local results_mod = require("neotest-tryke.results")
+local assertion_signs = require("neotest-tryke.assertion_signs")
 local server = require("neotest-tryke.server")
 local log = require("neotest-tryke.logger")
 
@@ -674,6 +675,7 @@ function adapter.results(spec, result, tree)
         empty[pos.id] = { status = "skipped", short = pos.name .. ": not run" }
       end
     end
+    assertion_signs.render(empty, root)
     return empty
   end
 
@@ -713,6 +715,7 @@ function adapter.results(spec, result, tree)
     log.debug("results: unmatched ids =", unmatched)
   end
 
+  assertion_signs.render(parsed, root)
   return parsed
 end
 
