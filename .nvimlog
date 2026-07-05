@@ -1,0 +1,2 @@
+WRN 2026-07-04T22:44:15.937 ?.27542    server_start:193: Failed to start server: operation not permitted: /var/folders/rf/zzf905017lx5rf6_bj54n6c00000gn/T/nvim.justinchapman/jWxNVv/nvim.27542.0
+WRN 2026-07-04T22:44:19.720 ?.27566    server_start:193: Failed to start server: operation not permitted: /var/folders/rf/zzf905017lx5rf6_bj54n6c00000gn/T/nvim.justinchapman/H2gfgF/nvim.27566.0
