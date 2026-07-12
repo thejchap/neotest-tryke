@@ -150,13 +150,7 @@ function adapter.discover_positions(file_path)
   log.debug("discover_positions:", file_path, "mode =", cfg.discovery)
   if cfg.discovery == "cli" then
     local root = adapter.root(file_path)
-    local ok, result = pcall(
-      require("neotest-tryke.cli_discovery").discover,
-      file_path,
-      root,
-      cfg.tryke_command,
-      cfg.python
-    )
+    local ok, result = pcall(require("neotest-tryke.cli_discovery").discover, file_path, root, cfg)
     if ok then
       return result
     end
@@ -729,6 +723,9 @@ adapter._should_restart_after_did_change = should_restart_after_did_change
 setmetatable(adapter, {
   __call = function(_, opts)
     cfg = config.get(opts)
+    -- A new config can change `tryke_command`/`python`, invalidating any
+    -- discovery snapshot collected under the old one.
+    require("neotest-tryke.cli_discovery").reset()
     log.set_level(cfg.log_level)
     log.info(
       "setup:",

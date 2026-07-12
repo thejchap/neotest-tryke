@@ -1,5 +1,6 @@
 local M = {}
 
+local nio = require("nio")
 local Tree = require("neotest.types").Tree
 local log = require("neotest-tryke.logger")
 
@@ -239,52 +240,191 @@ local function build_tree_list(file_path, tests, file_range)
   return file_node
 end
 
---- Discover tests in `file_path` by delegating to the tryke CLI.
---- Returns a `neotest.Tree` on success, or `nil` if tryke reports no
---- tests (lets neotest treat the file as empty).
----
---- Throws if tryke exits non-zero — the caller catches this and falls
---- back to the treesitter path so a missing binary doesn't take down
---- every discover_positions call.
+--- Build a neotest Tree for one file from an already-parsed TestItem
+--- list. Returns nil for an empty list (lets neotest treat the file as
+--- empty).
 ---@param file_path string
----@param root string
----@param tryke_command string
----@param python string|nil  Forwarded as `--python <path>` so collection
----  uses the same interpreter as the test run; otherwise tryke falls back
----  to PATH and may not find the project's tryke package, breaking
----  discovery the same way it would break execution.
+---@param tests table[]
 ---@return table|nil
-function M.discover(file_path, root, tryke_command, python)
-  local rel = relpath(file_path, root)
-  local cmd = { tryke_command, "test", rel, "--collect-only", "--reporter", "json" }
-  if python then
-    table.insert(cmd, "--python")
-    table.insert(cmd, python)
-  end
-  log.debug("cli_discover: spawn", table.concat(cmd, " "), "cwd =", root)
-  local ok, result = pcall(function()
-    return vim.system(cmd, { cwd = root, text = true }):wait()
-  end)
-  if not ok then
-    log.error("cli_discover: vim.system threw for", tryke_command, "—", tostring(result))
-    error("failed to run " .. tryke_command .. ": " .. tostring(result))
-  end
-  if result.code ~= 0 then
-    log.warn(
-      "cli_discover: exit",
-      result.code,
-      "for",
-      file_path,
-      "stderr:",
-      (result.stderr or ""):sub(1, 500)
-    )
-    error("tryke --collect-only exited " .. result.code)
-  end
-  local tests = parse_collect_output(result.stdout)
-  log.debug("cli_discover:", file_path, "→", #tests, "test(s)")
+function M.build_file_tree(file_path, tests)
   if #tests == 0 then
     return nil
   end
+  local file_range = { 0, 0, count_lines(file_path), 0 }
+  local list = build_tree_list(file_path, tests, file_range)
+  return Tree.from_list(list, function(pos)
+    return pos.id
+  end)
+end
+
+--- Kill a collect subprocess that wedges rather than exits; well past
+--- any observed whole-project collect time.
+local COLLECT_TIMEOUT_MS = 15000
+
+--- After a failed whole-project collect, error out immediately (→
+--- treesitter fallback) instead of re-spawning a failing batch for every
+--- file neotest asks about.
+local FAILURE_BACKOFF_S = 10
+
+--- Bound on the server `discover` round-trip. Generous — a warm
+--- rediscover is tens of ms — because the wait is async and a slow reply
+--- only delays positions, never the UI.
+local SERVER_DISCOVER_TIMEOUT_MS = 10000
+
+--- Per-root discovery caches:
+---   complete     — a whole-project collect has succeeded; absence from
+---                  `by_file` then means "no tests in this file"
+---   collected_at — os.time() captured before that collect spawned
+---   by_file      — [abs path] = { tests = TestItem[], validated_at }
+---   sem          — nio semaphore(1) serializing this root's tryke spawns;
+---                  doubles as the single-flight guard for the batch
+---                  (waiters re-check the cache after acquiring)
+---   failed_at    — os.time() of the last failed batch, for the backoff
+local caches = {}
+
+--- Drop every per-root cache. Called from adapter setup — a new config
+--- may change `tryke_command`/`python` and invalidate cached results —
+--- and from specs.
+function M.reset()
+  caches = {}
+end
+
+local function get_cache(root)
+  local cache = caches[root]
+  if not cache then
+    cache = {
+      complete = false,
+      collected_at = 0,
+      by_file = {},
+      sem = nio.control.semaphore(1),
+      failed_at = nil,
+    }
+    caches[root] = cache
+  end
+  return cache
+end
+
+--- Run `fn` while holding the cache's semaphore. Trap errors and rethrow
+--- after the release: not every nio version releases on error, and a
+--- throw that kept the semaphore would deadlock every later discover for
+--- this root.
+local function with_lock(cache, fn)
+  local ok, err
+  cache.sem.with(function()
+    ok, err = pcall(fn)
+  end)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function build_cmd(cfg, rel)
+  local cmd = { cfg.tryke_command, "test" }
+  if rel then
+    table.insert(cmd, rel)
+  end
+  table.insert(cmd, "--collect-only")
+  table.insert(cmd, "--reporter")
+  table.insert(cmd, "json")
+  if cfg.python then
+    table.insert(cmd, "--python")
+    table.insert(cmd, cfg.python)
+  end
+  return cmd
+end
+
+--- Spawn a tryke collect and await it WITHOUT blocking the editor:
+--- `vim.system`'s completion callback resolves an nio future that this
+--- coroutine (neotest calls discover_positions from an nio context)
+--- yields on. Returns the parsed TestItem list; throws on spawn failure
+--- or non-zero exit so callers keep the treesitter-fallback contract.
+local function spawn_collect(cmd, cwd)
+  log.debug("cli_discover: spawn", table.concat(cmd, " "), "cwd =", cwd)
+  local future = nio.control.future()
+  local ok, spawn_err = pcall(vim.system, cmd, {
+    cwd = cwd,
+    text = true,
+    timeout = COLLECT_TIMEOUT_MS,
+  }, function(result)
+    future.set(result)
+  end)
+  if not ok then
+    log.error("cli_discover: vim.system threw for", cmd[1], "—", tostring(spawn_err))
+    error("failed to run " .. cmd[1] .. ": " .. tostring(spawn_err))
+  end
+  local result = future.wait()
+  if result.code ~= 0 then
+    log.warn("cli_discover: exit", result.code, "stderr:", (result.stderr or ""):sub(1, 500))
+    error("tryke --collect-only exited " .. result.code)
+  end
+  return parse_collect_output(result.stdout)
+end
+
+--- Resolve tryke's root-relative `TestItem.file_path` to an absolute
+--- path (mirrors `results.build_id`). Absolute paths pass through.
+local function abspath(rel, root)
+  if rel:sub(1, 1) == "/" then
+    return rel
+  end
+  return root .. "/" .. rel
+end
+
+--- Freshness stamp for a collect that started at `started_at` (wall
+--- seconds). Freshness is checked as `mtime < validated_at`, so a file
+--- whose last modification predates the collect — the collect saw its
+--- current content — gets `mtime + 1` and stays fresh until the next
+--- save bumps its mtime. A file modified during the collect keeps the
+--- conservative `started_at` stamp: the next lookup treats it as stale
+--- and re-collects.
+local function freshness_stamp(path, started_at)
+  local stat = vim.uv.fs_stat(path)
+  if stat and stat.mtime.sec < started_at then
+    return stat.mtime.sec + 1
+  end
+  return started_at
+end
+
+--- Install a whole-project TestItem list as this root's cache snapshot.
+local function install_project_tests(cache, root, tests, started_at)
+  local by_file = {}
+  for _, t in ipairs(tests) do
+    local fp = t.file_path
+    if type(fp) == "string" and fp ~= "" then
+      local abs = abspath(fp, root)
+      local entry = by_file[abs]
+      if not entry then
+        entry = { tests = {}, validated_at = freshness_stamp(abs, started_at) }
+        by_file[abs] = entry
+      end
+      table.insert(entry.tests, t)
+    end
+  end
+  cache.by_file = by_file
+  cache.collected_at = started_at
+  cache.complete = true
+  cache.failed_at = nil
+end
+
+--- One whole-project collect for the root: ~the same cost as collecting
+--- a single file (discovery is static Rust-side parsing), and it replaces
+--- one spawn per test file during neotest's project-wide scan.
+local function run_batch_collect(cache, root, cfg)
+  local started_at = os.time()
+  local ok, tests = pcall(spawn_collect, build_cmd(cfg, nil), root)
+  if not ok then
+    cache.failed_at = os.time()
+    error(tests, 0)
+  end
+  log.debug("cli_discover: batch →", #tests, "test(s) for", root)
+  install_project_tests(cache, root, tests, started_at)
+end
+
+--- Collect just `file_path` (stale or unknown to the snapshot). An empty
+--- result is still a valid entry: the file genuinely has no tests.
+local function collect_single_file(cache, file_path, root, cfg)
+  local started_at = os.time()
+  local tests = spawn_collect(build_cmd(cfg, relpath(file_path, root)), root)
+  log.debug("cli_discover:", file_path, "→", #tests, "test(s)")
   for _, t in ipairs(tests) do
     log.trace(
       "cli_discover: test name =",
@@ -297,11 +437,138 @@ function M.discover(file_path, root, tryke_command, python)
       t.line_number
     )
   end
-  local file_range = { 0, 0, count_lines(file_path), 0 }
-  local list = build_tree_list(file_path, tests, file_range)
-  return Tree.from_list(list, function(pos)
-    return pos.id
-  end)
+  cache.by_file[file_path] = {
+    tests = tests,
+    validated_at = freshness_stamp(file_path, started_at),
+  }
+end
+
+--- Refresh the snapshot through the persistent tryke server instead of a
+--- one-shot CLI spawn. Only when the adapter runs in server mode AND the
+--- server is already up — discovery must never pay server cold-start;
+--- the one-shot batch is cheaper than spawning workers. Returns false on
+--- any failure so the caller falls through to the CLI path.
+local function server_refresh(cache, root, cfg, changed_path)
+  if not cfg or cfg.mode ~= "server" then
+    return false
+  end
+  local server = require("neotest-tryke.server")
+  if not server.is_running() then
+    return false
+  end
+  if changed_path then
+    -- The server learns of saves via its debounced FS watcher; an
+    -- immediate `discover` could return pre-save results. `did_change`
+    -- first, so the warm discoverer sees the file as dirty. pcall: the
+    -- transport may die between `is_running` and the write.
+    pcall(server.send_did_change, { changed_path })
+  end
+  local started_at = os.time()
+  local resp, outcome = server.request_with_timeout("discover", nil, SERVER_DISCOVER_TIMEOUT_MS)
+  if outcome ~= server.RPC.OK then
+    log.debug("cli_discover: server discover", outcome, "— falling back to one-shot CLI")
+    return false
+  end
+  local tests = resp and resp.result and resp.result.tests
+  if type(tests) ~= "table" then
+    log.warn("cli_discover: server discover result has no tests array")
+    return false
+  end
+  log.debug("cli_discover: server discover →", #tests, "test(s)")
+  install_project_tests(cache, root, tests, started_at)
+  return true
+end
+
+--- Discover tests in `file_path` by delegating to tryke.
+--- Returns a `neotest.Tree` on success, or `nil` if tryke reports no
+--- tests (lets neotest treat the file as empty).
+---
+--- neotest's project-wide scan calls this once per test file; instead of
+--- one subprocess per call (203 spawns ≈ seconds of overhead on large
+--- projects), the first call fills a per-root snapshot — via the running
+--- tryke server's `discover` RPC in server mode, or one whole-project
+--- `--collect-only` spawn — and later calls are served from it. Entries
+--- are validated against the file's mtime; a stale or unknown file gets
+--- a targeted refresh. Every subprocess wait is async (nio), so the UI
+--- never blocks.
+---
+--- Throws if tryke fails (and on repeated batch failures within the
+--- backoff window) — the caller catches this and falls back to the
+--- treesitter path so a missing binary doesn't take down every
+--- discover_positions call.
+---@param file_path string
+---@param root string|nil  Project root; nil skips the cache and collects
+---  the one file, preserving the standalone-file semantics.
+---@param cfg table  Resolved adapter config; uses `tryke_command`,
+---  `python` (forwarded as `--python <path>` so collection uses the same
+---  interpreter as the test run) and `mode`.
+---@return table|nil
+function M.discover(file_path, root, cfg)
+  if not root then
+    return M.build_file_tree(file_path, spawn_collect(build_cmd(cfg, file_path), nil))
+  end
+
+  local cache = get_cache(root)
+  local stat = vim.uv.fs_stat(file_path)
+  local mtime = stat and stat.mtime.sec or nil
+
+  --- The cache entry for this file, or nil when it is missing or the
+  --- file changed after the collect that produced it. An unstattable
+  --- file (specs use paths that exist only in canned output) can't be
+  --- mtime-checked — serve whatever the snapshot has.
+  local function fresh_entry()
+    local entry = cache.by_file[file_path]
+    if not entry then
+      return nil
+    end
+    if mtime and mtime >= entry.validated_at then
+      return nil
+    end
+    return entry
+  end
+
+  local entry = fresh_entry()
+
+  -- No snapshot yet: fill it once. Concurrent callers (neotest scans
+  -- with a worker pool) queue on the semaphore and find the cache
+  -- populated when they get in.
+  if not entry and not cache.complete then
+    with_lock(cache, function()
+      if fresh_entry() or cache.complete then
+        return
+      end
+      if cache.failed_at and os.time() - cache.failed_at < FAILURE_BACKOFF_S then
+        error("tryke collect failed " .. (os.time() - cache.failed_at) .. "s ago — backing off")
+      end
+      if not server_refresh(cache, root, cfg, nil) then
+        run_batch_collect(cache, root, cfg)
+      end
+    end)
+    entry = fresh_entry()
+  end
+
+  if not entry then
+    -- Absent from a complete snapshot and unchanged since it was taken:
+    -- tryke genuinely found no tests in this file.
+    if cache.by_file[file_path] == nil and mtime and mtime < cache.collected_at then
+      return nil
+    end
+    -- Stale, or new since the snapshot: targeted refresh.
+    with_lock(cache, function()
+      if fresh_entry() then
+        return
+      end
+      if not server_refresh(cache, root, cfg, file_path) then
+        collect_single_file(cache, file_path, root, cfg)
+      end
+    end)
+    entry = cache.by_file[file_path]
+  end
+
+  if not entry or #entry.tests == 0 then
+    return nil
+  end
+  return M.build_file_tree(file_path, entry.tests)
 end
 
 return M

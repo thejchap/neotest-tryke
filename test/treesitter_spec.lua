@@ -53,6 +53,83 @@ describe("is_test_file", function()
   it("returns true for in-source file with __TRYKE_TESTING__ guard even if tryke import is late", function()
     assert.is_true(ts.is_test_file(fixtures .. "late_in_source_test.py"))
   end)
+
+  it("returns false when the only >>> is past the scan cap", function()
+    local path = vim.fn.tempname() .. ".py"
+    local lines = {}
+    for _ = 1, 2000 do
+      lines[#lines + 1] = "x = 1"
+    end
+    lines[#lines + 1] = '""">>> add(1, 2)"""'
+    local f = assert(io.open(path, "w"))
+    f:write(table.concat(lines, "\n"))
+    f:close()
+    assert.is_false(ts.is_test_file(path))
+    os.remove(path)
+  end)
+
+  it("returns true for a tryke import at the top of a very long file", function()
+    local path = vim.fn.tempname() .. ".py"
+    local lines = { "from tryke import test" }
+    for _ = 1, 2000 do
+      lines[#lines + 1] = "x = 1"
+    end
+    local f = assert(io.open(path, "w"))
+    f:write(table.concat(lines, "\n"))
+    f:close()
+    assert.is_true(ts.is_test_file(path))
+    os.remove(path)
+  end)
+end)
+
+describe("is_tryke_project", function()
+  local function make_root(pyproject_content)
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    if pyproject_content then
+      local f = assert(io.open(root .. "/pyproject.toml", "w"))
+      f:write(pyproject_content)
+      f:close()
+    end
+    return root
+  end
+
+  it("returns false when pyproject.toml is missing", function()
+    assert.is_false(ts.is_tryke_project(make_root(nil)))
+  end)
+
+  it("returns true when pyproject.toml mentions tryke", function()
+    assert.is_true(ts.is_tryke_project(make_root("[tool.tryke]\n")))
+  end)
+
+  it("returns false when pyproject.toml does not mention tryke", function()
+    assert.is_false(ts.is_tryke_project(make_root("[tool.pytest.ini_options]\n")))
+  end)
+
+  it("serves the cached result while pyproject.toml's mtime is unchanged", function()
+    local root = make_root("[tool.tryke]\n")
+    assert.is_true(ts.is_tryke_project(root))
+    local path = root .. "/pyproject.toml"
+    local stat = vim.uv.fs_stat(path)
+    local f = assert(io.open(path, "w"))
+    f:write("[tool.pytest.ini_options]\n")
+    f:close()
+    -- pin mtime back so the cache cannot see the rewrite
+    vim.uv.fs_utime(path, stat.atime.sec, stat.mtime.sec)
+    assert.is_true(ts.is_tryke_project(root))
+  end)
+
+  it("recomputes when pyproject.toml's mtime changes", function()
+    local root = make_root("[tool.tryke]\n")
+    assert.is_true(ts.is_tryke_project(root))
+    local path = root .. "/pyproject.toml"
+    local f = assert(io.open(path, "w"))
+    f:write("[tool.pytest.ini_options]\n")
+    f:close()
+    local stat = vim.uv.fs_stat(path)
+    vim.uv.fs_utime(path, stat.atime.sec, stat.mtime.sec + 10)
+    assert.is_false(ts.is_tryke_project(root))
+  end)
 end)
 
 describe("build_position", function()

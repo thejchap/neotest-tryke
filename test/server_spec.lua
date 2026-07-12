@@ -74,6 +74,36 @@ describe("server._build_spawn_options", function()
   end)
 end)
 
+describe("server._classify_reply", function()
+  it("maps a timeout to TIMEOUT", function()
+    assert.equal(server.RPC.TIMEOUT, server._classify_reply(true, nil, nil))
+  end)
+
+  it("maps a transport error to ERROR", function()
+    assert.equal(server.RPC.ERROR, server._classify_reply(false, "closed", nil))
+  end)
+
+  it("maps METHOD_NOT_FOUND to UNSUPPORTED", function()
+    local resp = { error = { code = -32601, message = "method not found" } }
+    assert.equal(server.RPC.UNSUPPORTED, server._classify_reply(false, nil, resp))
+  end)
+
+  it("maps any other server error to ERROR", function()
+    local resp = { error = { code = -32603, message = "internal" } }
+    assert.equal(server.RPC.ERROR, server._classify_reply(false, nil, resp))
+  end)
+
+  it("maps a reply with neither result nor error to MALFORMED", function()
+    assert.equal(server.RPC.MALFORMED, server._classify_reply(false, nil, {}))
+    assert.equal(server.RPC.MALFORMED, server._classify_reply(false, nil, nil))
+  end)
+
+  it("maps a reply with a result to OK", function()
+    local resp = { result = { tests = {} } }
+    assert.equal(server.RPC.OK, server._classify_reply(false, nil, resp))
+  end)
+end)
+
 describe("server.is_running", function()
   it("is false before any server has been spawned", function()
     -- With the stdio transport the child process IS the connection;
@@ -88,5 +118,13 @@ describe("server.is_running", function()
     local ok, err = pcall(server.send_request, "ping")
     assert.is_false(ok)
     assert.matches("not running", tostring(err))
+  end)
+
+  it("request_with_timeout returns ERROR instead of throwing when the server is down", function()
+    -- Discovery treats the server as an optimisation: a dead transport
+    -- must map to a fallback signal, not a crash at the call site.
+    local resp, outcome = server.request_with_timeout("discover", nil, 100)
+    assert.is_nil(resp)
+    assert.equal(server.RPC.ERROR, outcome)
   end)
 end)

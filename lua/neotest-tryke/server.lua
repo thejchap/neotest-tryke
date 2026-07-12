@@ -215,6 +215,98 @@ function M.on_notification(method, handler)
   notification_handlers[method] = handler
 end
 
+local METHOD_NOT_FOUND = -32601
+
+--- Race `future.wait()` against a sleep. Returns `(timed_out, wait_err,
+--- resp)`; on timeout the pending entry for `id` is cancelled so a late
+--- server reply can't resolve a future no one is awaiting.
+---
+--- nio.first returns as soon as either branch completes; it does NOT
+--- cancel the loser, so the `future.wait()` coroutine keeps running and
+--- may write to its upvalues after we return — harmless because we never
+--- read them again, but it does mean the closure stays alive until the
+--- server reply arrives or the transport dies.
+local function bounded_wait(future, id, timeout_ms)
+  local resp = nil
+  local wait_err = nil
+  local timed_out = true
+  nio.first({
+    function()
+      -- pcall: the future is failed (set_error) when the server process
+      -- exits or is stopped mid-wait. Map that to an error, not a crash.
+      local ok, r = pcall(future.wait)
+      if ok then
+        resp = r
+      else
+        wait_err = r
+      end
+      timed_out = false
+    end,
+    function()
+      nio.sleep(timeout_ms)
+    end,
+  })
+  if timed_out then
+    M.cancel_request(id)
+  end
+  return timed_out, wait_err, resp
+end
+
+--- Outcome of a `request_with_timeout` round-trip.
+local RPC = {
+  OK = "ok", -- server replied with a result
+  UNSUPPORTED = "unsupported", -- METHOD_NOT_FOUND (older server)
+  ERROR = "error", -- server returned an error, the transport died, or the send failed
+  TIMEOUT = "timeout", -- no reply within timeout_ms
+  MALFORMED = "malformed", -- reply has neither result nor error
+}
+M.RPC = RPC
+
+--- Classify the terminal state of a bounded RPC wait into an `RPC`
+--- outcome. Pure — extracted so specs can pin the mapping without a live
+--- transport.
+function M._classify_reply(timed_out, wait_err, resp)
+  if timed_out then
+    return RPC.TIMEOUT
+  end
+  if wait_err then
+    return RPC.ERROR
+  end
+  if resp and resp.error then
+    if resp.error.code == METHOD_NOT_FOUND then
+      return RPC.UNSUPPORTED
+    end
+    return RPC.ERROR
+  end
+  -- A well-formed response from the server has `result` set. Treating
+  -- "no error key" as success would let a misbehaving server claim
+  -- success with no payload.
+  if not (resp and resp.result ~= nil) then
+    return RPC.MALFORMED
+  end
+  return RPC.OK
+end
+
+--- Send `method` and wait (bounded) for the reply. Unlike `send_request`
+--- this never throws: a dead transport maps to ERROR, so callers that
+--- treat the server as an optimisation (e.g. cli discovery) can fall
+--- back without a pcall at every call site.
+--- Returns `(resp|nil, outcome)` with outcome one of the `RPC` values.
+function M.request_with_timeout(method, params, timeout_ms)
+  local ok, future, id = pcall(M.send_request, method, params)
+  if not ok then
+    log.debug("server:", method, "send failed —", tostring(future))
+    return nil, RPC.ERROR
+  end
+  local timed_out, wait_err, resp = bounded_wait(future, id, timeout_ms)
+  if timed_out then
+    log.warn("server:", method, "timed out after", timeout_ms, "ms")
+  elseif wait_err then
+    log.warn("server:", method, "transport error —", tostring(wait_err))
+  end
+  return resp, M._classify_reply(timed_out, wait_err, resp)
+end
+
 --- How long to wait for a `did_change` ack before giving up and
 --- proceeding to `run`. Intentionally the same magnitude as the
 --- `run_complete` bound in init.lua — both protect against the same
@@ -253,45 +345,20 @@ M.DID_CHANGE = DID_CHANGE
 ---   means the server confirmed the dirty mark; every other value means
 ---   the run may race the on-disk content.
 function M.send_did_change(paths)
-  local METHOD_NOT_FOUND = -32601
   local future, id = M.send_request("did_change", { paths = paths })
 
   -- Bounded wait: `future.wait()` would block forever if the server
   -- accepted the request but never replied (slow discovery, swallowed
   -- reply, deadlock). Race the wait against a sleep, exactly like the
-  -- `run_complete_event` bound in init.lua. nio.first returns as soon
-  -- as either branch completes; it does NOT cancel the loser, so the
-  -- `future.wait()` coroutine keeps running and may write to `resp` /
-  -- `timed_out` after we return — harmless because we never read them
-  -- again, but it does mean the closure stays alive until the server
-  -- reply arrives or the transport dies.
-  local resp = nil
-  local wait_err = nil
-  local timed_out = true
-  nio.first({
-    function()
-      -- pcall: the future is failed (set_error) when the server process
-      -- exits or is stopped mid-wait. Map that to ERROR, not a crash.
-      local ok, r = pcall(future.wait)
-      if ok then
-        resp = r
-      else
-        wait_err = r
-      end
-      timed_out = false
-    end,
-    function()
-      nio.sleep(DID_CHANGE_TIMEOUT_MS)
-    end,
-  })
+  -- `run_complete_event` bound in init.lua.
+  local timed_out, wait_err, resp = bounded_wait(future, id, DID_CHANGE_TIMEOUT_MS)
 
   if timed_out then
-    -- Drop the pending entry so a late reply doesn't resolve a future
-    -- no one is awaiting. Caller (init.lua) restarts the server before
-    -- sending `run`: stdio is a single in-order channel, so a `run`
-    -- sent behind the still-processing `did_change` would queue behind
-    -- it with no second connection to escape to.
-    M.cancel_request(id)
+    -- The pending entry is already cancelled so a late reply doesn't
+    -- resolve a future no one is awaiting. Caller (init.lua) restarts
+    -- the server before sending `run`: stdio is a single in-order
+    -- channel, so a `run` sent behind the still-processing `did_change`
+    -- would queue behind it with no second connection to escape to.
     log.warn("server: did_change timed out after", DID_CHANGE_TIMEOUT_MS, "ms — proceeding")
     return DID_CHANGE.TIMEOUT
   end

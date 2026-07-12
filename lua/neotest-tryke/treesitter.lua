@@ -581,6 +581,14 @@ function M.position_id(position, parents)
   )
 end
 
+--- Hard cap on the `is_test_file` line scan. neotest runs `is_test_file`
+--- over every `.py` file in the project during its directory scan, so an
+--- unbounded walk (the doctest `>>>` check used to read to EOF) turns into
+--- a synchronous I/O stall on large projects. A doctest whose first `>>>`
+--- appears after this many lines is no longer detected — acceptable, since
+--- cli discovery is ground truth and treesitter is the fallback.
+local MAX_SCAN_LINES = 1024
+
 function M.is_test_file(file_path)
   if not vim.endswith(file_path, ".py") then
     return false
@@ -589,40 +597,59 @@ function M.is_test_file(file_path)
   if not f then
     return false
   end
-  local has_tryke_import = false
-  local has_testing_guard = false
-  local has_doctest = false
+  local found = false
   local i = 0
   for line in f:lines() do
     i = i + 1
+    if i > MAX_SCAN_LINES then
+      break
+    end
     if i <= 50 then
       if line:find("from tryke import") or line:find("import tryke") then
-        has_tryke_import = true
+        found = true
         break
       end
       -- In-source testing pattern: `from tryke_guard import __TRYKE_TESTING__`
       -- lives up with the regular imports even when the actual tryke imports
       -- hide deep in the file inside the guard block.
       if line:find("tryke_guard") or line:find("__TRYKE_TESTING__") then
-        has_testing_guard = true
+        found = true
+        break
       end
     end
-    if not has_doctest and line:find(">>>") then
-      has_doctest = true
+    if line:find(">>>") then
+      found = true
+      break
     end
   end
   f:close()
-  return has_tryke_import or has_testing_guard or has_doctest
+  return found
 end
 
+--- Cached per root and keyed on pyproject.toml's mtime: `adapter.root`
+--- calls this for every buffer neotest inspects, and re-reading the file
+--- each time adds synchronous I/O to the discovery path.
+local project_cache = {}
+
 function M.is_tryke_project(root)
-  local f = io.open(root .. "/pyproject.toml", "r")
+  local pyproject = root .. "/pyproject.toml"
+  local stat = vim.uv.fs_stat(pyproject)
+  if not stat then
+    return false
+  end
+  local cached = project_cache[root]
+  if cached and cached.mtime == stat.mtime.sec then
+    return cached.result
+  end
+  local f = io.open(pyproject, "r")
   if not f then
     return false
   end
   local content = f:read("*a")
   f:close()
-  return content:find("tryke") ~= nil
+  local result = content:find("tryke") ~= nil
+  project_cache[root] = { mtime = stat.mtime.sec, result = result }
+  return result
 end
 
 return M
