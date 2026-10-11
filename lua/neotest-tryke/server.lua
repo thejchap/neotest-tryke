@@ -108,7 +108,7 @@ end
 --- Returns `(args, env)`:
 ---  * `args`: positional arguments for `tryke server`. The stdio server
 ---    takes no `--port` (removed in tryke PR #148); appends
----    `--python <path>` when set.
+---    `--python <path>` and `--workers <n>` when set.
 ---  * `env`: nil when no env override is needed (libuv inherits the parent
 ---    env in that case). Otherwise an array of `"KEY=VALUE"` strings —
 ---    libuv resets the env when `env` is provided, so we have to splice
@@ -122,6 +122,10 @@ function M._build_spawn_options(config)
   if config.python then
     table.insert(args, "--python")
     table.insert(args, config.python)
+  end
+  if config.workers then
+    table.insert(args, "--workers")
+    table.insert(args, tostring(config.workers))
   end
 
   local env = nil
